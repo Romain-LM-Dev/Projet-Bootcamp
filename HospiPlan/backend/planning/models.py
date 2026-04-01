@@ -152,6 +152,8 @@ class ServiceStatus(models.Model):
 
     class Meta:
         db_table = "service_status"
+        verbose_name = "Service status"
+        verbose_name_plural = "Service status"
 
 
 class StaffServiceAssignment(models.Model):

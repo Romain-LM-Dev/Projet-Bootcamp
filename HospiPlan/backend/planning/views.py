@@ -1,30 +1,18 @@
 """
 views.py — Vues API Django REST Framework
-==========================================
-Endpoints principaux :
-  /api/staff/           GET (list), POST
-  /api/staff/<id>/      GET (detail), PUT, PATCH, DELETE
-  /api/shifts/          GET, POST
-  /api/shifts/<id>/     GET, PUT, PATCH, DELETE
-  /api/assignments/     GET, POST  ← appelle les validateurs de contraintes
-  /api/assignments/<id>/DELETE
-  /api/absences/        GET, POST
-  /api/absences/<id>/   GET, DELETE
-  /api/certifications/  GET
-  /api/contract-types/  GET
-  /api/shift-types/     GET
-  /api/absence-types/   GET
-  /api/services/        GET
 """
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.generics import get_object_or_404
 from django.db import IntegrityError
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.http import JsonResponse
 
 from .models import (
     Staff, Shift, ShiftAssignment, Absence, AbsenceType,
     Certification, ContractType, ShiftType, Service,
+    Role, Specialty, StaffCertification, Contract,
 )
 from .serializers import (
     StaffListSerializer, StaffDetailSerializer, StaffWriteSerializer,
@@ -33,7 +21,16 @@ from .serializers import (
     AbsenceSerializer, AbsenceTypeSerializer,
     CertificationSerializer, ContractTypeSerializer, ShiftTypeSerializer,
     ServiceSerializer,
+    RoleSerializer, SpecialtySerializer,
+    StaffCertificationWriteSerializer, ContractWriteSerializer,
 )
+
+
+# ─── CSRF cookie ────────────────────────────────────────────────────────────
+
+@ensure_csrf_cookie
+def csrf_view(request):
+    return JsonResponse({"detail": "CSRF cookie set"})
 
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -45,12 +42,9 @@ def error(detail, code=None, http_status=status.HTTP_400_BAD_REQUEST):
     return Response(payload, status=http_status)
 
 
-# ─── Staff ────────────────────────────────────────────────────────────────────
+# ─── Staff ───────────────────────────────────────────────────────────────────
 
 class StaffListView(APIView):
-    """GET /api/staff/  — liste tous les soignants
-       POST /api/staff/ — crée un soignant"""
-
     def get(self, request):
         qs = Staff.objects.prefetch_related(
             "staff_roles__role", "staff_specialties__specialty"
@@ -61,13 +55,16 @@ class StaffListView(APIView):
         ser = StaffWriteSerializer(data=request.data)
         if ser.is_valid():
             staff = ser.save()
+            # Recharger avec les prefetch pour le serializer de lecture
+            staff = Staff.objects.prefetch_related(
+                "staff_roles__role", "staff_specialties__specialty",
+                "certifications__certification", "contracts__contract_type",
+            ).get(pk=staff.pk)
             return Response(StaffDetailSerializer(staff).data, status=status.HTTP_201_CREATED)
         return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class StaffDetailView(APIView):
-    """GET / PUT / PATCH / DELETE /api/staff/<pk>/"""
-
     def _get(self, pk):
         return get_object_or_404(
             Staff.objects.prefetch_related(
@@ -84,23 +81,105 @@ class StaffDetailView(APIView):
         staff = self._get(pk)
         ser = StaffWriteSerializer(staff, data=request.data)
         if ser.is_valid():
-            return Response(StaffDetailSerializer(ser.save()).data)
+            updated = ser.save()
+            updated = Staff.objects.prefetch_related(
+                "staff_roles__role", "staff_specialties__specialty",
+                "certifications__certification", "contracts__contract_type",
+            ).get(pk=updated.pk)
+            return Response(StaffDetailSerializer(updated).data)
         return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def patch(self, request, pk):
         staff = self._get(pk)
         ser = StaffWriteSerializer(staff, data=request.data, partial=True)
         if ser.is_valid():
-            return Response(StaffDetailSerializer(ser.save()).data)
+            updated = ser.save()
+            updated = Staff.objects.prefetch_related(
+                "staff_roles__role", "staff_specialties__specialty",
+                "certifications__certification", "contracts__contract_type",
+            ).get(pk=updated.pk)
+            return Response(StaffDetailSerializer(updated).data)
         return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, pk):
-        staff = self._get(pk)
-        staff.delete()
+        self._get(pk).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# ─── Shifts (postes de garde) ─────────────────────────────────────────────────
+# ─── Rôles ───────────────────────────────────────────────────────────────────
+
+class RoleListView(APIView):
+    def get(self, request):
+        return Response(RoleSerializer(Role.objects.all(), many=True).data)
+
+
+# ─── Spécialités ─────────────────────────────────────────────────────────────
+
+class SpecialtyListView(APIView):
+    def get(self, request):
+        return Response(SpecialtySerializer(Specialty.objects.all(), many=True).data)
+
+
+# ─── Certifications soignant ────────────────────────────────────────────────
+
+class StaffCertificationListCreateView(APIView):
+    def get(self, request):
+        qs = StaffCertification.objects.select_related("certification").all()
+        staff_id = request.query_params.get("staff")
+        if staff_id:
+            qs = qs.filter(staff_id=staff_id)
+        return Response(StaffCertificationWriteSerializer(qs, many=True).data)
+
+    def post(self, request):
+        ser = StaffCertificationWriteSerializer(data=request.data)
+        if ser.is_valid():
+            obj = ser.save()
+            obj = StaffCertification.objects.select_related("certification").get(pk=obj.pk)
+            return Response(StaffCertificationWriteSerializer(obj).data,
+                            status=status.HTTP_201_CREATED)
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class StaffCertificationDetailView(APIView):
+    def delete(self, request, pk):
+        get_object_or_404(StaffCertification, pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ─── Contrats ────────────────────────────────────────────────────────────────
+
+class ContractListCreateView(APIView):
+    def get(self, request):
+        qs = Contract.objects.select_related("contract_type").all()
+        staff_id = request.query_params.get("staff")
+        if staff_id:
+            qs = qs.filter(staff_id=staff_id)
+        return Response(ContractWriteSerializer(qs, many=True).data)
+
+    def post(self, request):
+        ser = ContractWriteSerializer(data=request.data)
+        if ser.is_valid():
+            obj = ser.save()
+            obj = Contract.objects.select_related("contract_type").get(pk=obj.pk)
+            return Response(ContractWriteSerializer(obj).data,
+                            status=status.HTTP_201_CREATED)
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ContractDetailView(APIView):
+    def patch(self, request, pk):
+        contract = get_object_or_404(Contract, pk=pk)
+        ser = ContractWriteSerializer(contract, data=request.data, partial=True)
+        if ser.is_valid():
+            return Response(ContractWriteSerializer(ser.save()).data)
+        return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        get_object_or_404(Contract, pk=pk).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ─── Shifts ──────────────────────────────────────────────────────────────────
 
 class ShiftListView(APIView):
     def get(self, request):
@@ -145,17 +224,9 @@ class ShiftDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# ─── Assignments (affectations) ───────────────────────────────────────────────
+# ─── Assignments ─────────────────────────────────────────────────────────────
 
 class AssignmentListView(APIView):
-    """
-    GET  /api/assignments/        — liste toutes les affectations
-    POST /api/assignments/        — crée une affectation APRÈS validation des contraintes
-
-    En cas de violation de contrainte dure :
-      HTTP 409 Conflict  { "code": "C3", "detail": "..." }
-    """
-
     def get(self, request):
         qs = ShiftAssignment.objects.select_related(
             "staff", "shift__care_unit"
@@ -166,7 +237,6 @@ class AssignmentListView(APIView):
         ser = ShiftAssignmentCreateSerializer(data=request.data)
         if not ser.is_valid():
             errors = ser.errors
-            # Constraint violations → 409
             if "non_field_errors" in errors:
                 for e in errors["non_field_errors"]:
                     if isinstance(e, dict) and "constraint" in e:
@@ -175,30 +245,27 @@ class AssignmentListView(APIView):
                             status=status.HTTP_409_CONFLICT,
                         )
             return Response(errors, status=status.HTTP_400_BAD_REQUEST)
-
         try:
             assignment = ser.save()
         except IntegrityError:
-            return error("Ce soignant est déjà affecté à ce poste.", http_status=status.HTTP_409_CONFLICT)
-
+            return error("Ce soignant est déjà affecté à ce poste.",
+                         http_status=status.HTTP_409_CONFLICT)
         return Response(
             ShiftAssignmentSerializer(
-                ShiftAssignment.objects.select_related("staff", "shift__care_unit").get(pk=assignment.pk)
+                ShiftAssignment.objects.select_related("staff", "shift__care_unit")
+                    .get(pk=assignment.pk)
             ).data,
             status=status.HTTP_201_CREATED,
         )
 
 
 class AssignmentDetailView(APIView):
-    """DELETE /api/assignments/<pk>/"""
-
     def delete(self, request, pk):
-        assignment = get_object_or_404(ShiftAssignment, pk=pk)
-        assignment.delete()
+        get_object_or_404(ShiftAssignment, pk=pk).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# ─── Absences ─────────────────────────────────────────────────────────────────
+# ─── Absences ────────────────────────────────────────────────────────────────
 
 class AbsenceListView(APIView):
     def get(self, request):

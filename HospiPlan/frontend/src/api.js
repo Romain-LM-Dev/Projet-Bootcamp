@@ -1,73 +1,85 @@
-/**
- * api.js — Couche de communication avec le backend Django
- * Toutes les fonctions retournent la réponse JSON ou lèvent une Error.
- */
+const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000/api";
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000/api";
-
-async function request(method, path, body = null) {
-  const opts = {
-    method,
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-  };
-  if (body !== null) opts.body = JSON.stringify(body);
-
-  const res = await fetch(`${BASE_URL}${path}`, opts);
-
-  if (res.status === 204) return null; // No Content
-
-  const data = await res.json().catch(() => ({}));
-
-  if (!res.ok) {
-    // On préserve le payload pour que l'UI puisse afficher le code de contrainte
-    const err = new Error(data.detail ?? `Erreur HTTP ${res.status}`);
-    err.status = res.status;
-    err.payload = data;
-    throw err;
-  }
-  return data;
+function getCookie(name) {
+  const value = `; ${document.cookie}`;
+  const parts = value.split(`; ${name}=`);
+  if (parts.length === 2) return parts.pop().split(";").shift();
+  return null;
 }
 
-// ── Soignants ─────────────────────────────────────────────────────────────────
+async function request(endpoint, { method = "GET", body } = {}) {
+  const headers = { "Content-Type": "application/json" };
+
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+    const token = getCookie("csrftoken");
+    if (token) headers["X-CSRFToken"] = token;
+  }
+
+  const res = await fetch(`${BASE}${endpoint}`, {
+    method,
+    headers,
+    credentials: "include",
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+
+  if (!res.ok) {
+    const payload = await res.json().catch(() => null);
+    const err = new Error(
+      payload?.detail ||
+        (typeof payload === "object" ? JSON.stringify(payload) : `Erreur ${res.status}`)
+    );
+    err.status = res.status;
+    err.payload = payload;
+    throw err;
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
 export const api = {
+  csrf: () => fetch(`${BASE}/csrf/`, { credentials: "include" }),
+
   staff: {
-    list: ()               => request("GET", "/staff/"),
-    get:  (id)             => request("GET", `/staff/${id}/`),
-    create: (data)         => request("POST", "/staff/", data),
-    update: (id, data)     => request("PUT", `/staff/${id}/`, data),
-    patch:  (id, data)     => request("PATCH", `/staff/${id}/`, data),
-    delete: (id)           => request("DELETE", `/staff/${id}/`),
+    list:   ()         => request("/staff/"),
+    get:    (id)       => request(`/staff/${id}/`),
+    create: (data)     => request("/staff/",       { method: "POST",  body: data }),
+    update: (id, data) => request(`/staff/${id}/`, { method: "PATCH", body: data }),
+    delete: (id)       => request(`/staff/${id}/`, { method: "DELETE" }),
   },
 
-  // ── Postes de garde ─────────────────────────────────────────────────────────
   shifts: {
-    list:   ()             => request("GET", "/shifts/"),
-    get:    (id)           => request("GET", `/shifts/${id}/`),
-    create: (data)         => request("POST", "/shifts/", data),
-    update: (id, data)     => request("PUT", `/shifts/${id}/`, data),
-    delete: (id)           => request("DELETE", `/shifts/${id}/`),
+    list:   ()   => request("/shifts/"),
+    delete: (id) => request(`/shifts/${id}/`, { method: "DELETE" }),
   },
 
-  // ── Affectations (POST peut retourner 409 avec code contrainte) ──────────────
   assignments: {
-    list:   ()             => request("GET", "/assignments/"),
-    create: (staffId, shiftId) =>
-      request("POST", "/assignments/", { staff_id: staffId, shift_id: shiftId }),
-    delete: (id)           => request("DELETE", `/assignments/${id}/`),
+    list:   ()             => request("/assignments/"),
+    create: (staff, shift) => request("/assignments/", { method: "POST", body: { staff, shift } }),
+    delete: (id)           => request(`/assignments/${id}/`, { method: "DELETE" }),
   },
 
-  // ── Absences ────────────────────────────────────────────────────────────────
   absences: {
-    list:    (staffId)     => request("GET", staffId ? `/absences/?staff_id=${staffId}` : "/absences/"),
-    create:  (data)        => request("POST", "/absences/", data),
-    delete:  (id)          => request("DELETE", `/absences/${id}/`),
+    list:   ()     => request("/absences/"),
+    create: (data) => request("/absences/", { method: "POST", body: data }),
+    delete: (id)   => request(`/absences/${id}/`, { method: "DELETE" }),
   },
 
-  // ── Référentiels ────────────────────────────────────────────────────────────
-  certifications: () => request("GET", "/certifications/"),
-  contractTypes:  () => request("GET", "/contract-types/"),
-  shiftTypes:     () => request("GET", "/shift-types/"),
-  absenceTypes:   () => request("GET", "/absence-types/"),
-  services:       () => request("GET", "/services/"),
+  absenceTypes:   () => request("/absence-types/"),
+  roles:          () => request("/roles/"),
+  specialties:    () => request("/specialties/"),
+  certifications: () => request("/certifications/"),
+  contractTypes:  () => request("/contract-types/"),
+
+  staffCertifications: {
+    list:   (staffId) => request(`/staff-certifications/?staff=${staffId}`),
+    create: (data)    => request("/staff-certifications/", { method: "POST",   body: data }),
+    delete: (id)      => request(`/staff-certifications/${id}/`, { method: "DELETE" }),
+  },
+
+  contracts: {
+    list:   (staffId) => request(`/contracts/?staff=${staffId}`),
+    create: (data)    => request("/contracts/",       { method: "POST",  body: data }),
+    update: (id, data) => request(`/contracts/${id}/`, { method: "PATCH", body: data }),
+    delete: (id)      => request(`/contracts/${id}/`, { method: "DELETE" }),
+  },
 };

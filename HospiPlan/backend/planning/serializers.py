@@ -3,14 +3,15 @@ serializers.py — Django REST Framework
 """
 from rest_framework import serializers
 from .models import (
-    Staff, Role, StaffRole, Specialty, Contract, ContractType,
+    Staff, Role, StaffRole, Specialty, StaffSpecialty,
+    Contract, ContractType,
     Certification, StaffCertification,
     Service, CareUnit, Shift, ShiftType, ShiftAssignment,
     Absence, AbsenceType, Preference,
 )
 
 
-# ── Références légères (pour les listes imbriquées) ──────────────────────────
+# ── Références légères ───────────────────────────────────────────────────────
 
 class RoleSerializer(serializers.ModelSerializer):
     class Meta:
@@ -48,14 +49,25 @@ class AbsenceTypeSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "impacts_quota"]
 
 
-# ── Staff ─────────────────────────────────────────────────────────────────────
+# ── Staff — lecture ──────────────────────────────────────────────────────────
 
 class StaffCertificationSerializer(serializers.ModelSerializer):
     certification_name = serializers.CharField(source="certification.name", read_only=True)
 
     class Meta:
         model = StaffCertification
-        fields = ["id", "certification", "certification_name", "obtained_date", "expiration_date"]
+        fields = ["id", "certification", "certification_name",
+                  "obtained_date", "expiration_date"]
+
+
+class StaffCertificationWriteSerializer(serializers.ModelSerializer):
+    """Pour créer une certification via POST /api/staff-certifications/"""
+    certification_name = serializers.CharField(source="certification.name", read_only=True)
+
+    class Meta:
+        model = StaffCertification
+        fields = ["id", "staff", "certification", "certification_name",
+                  "obtained_date", "expiration_date"]
 
 
 class ContractSerializer(serializers.ModelSerializer):
@@ -76,8 +88,17 @@ class ContractSerializer(serializers.ModelSerializer):
         ]
 
 
+class ContractWriteSerializer(serializers.ModelSerializer):
+    """Pour créer un contrat via POST /api/contracts/"""
+    contract_type_name = serializers.CharField(source="contract_type.name", read_only=True)
+
+    class Meta:
+        model = Contract
+        fields = ["id", "staff", "contract_type", "contract_type_name",
+                  "start_date", "end_date", "workload_percent"]
+
+
 class StaffListSerializer(serializers.ModelSerializer):
-    """Serializer allégé pour les listes."""
     roles = serializers.SerializerMethodField()
     specialties = serializers.SerializerMethodField()
 
@@ -96,7 +117,6 @@ class StaffListSerializer(serializers.ModelSerializer):
 
 
 class StaffDetailSerializer(StaffListSerializer):
-    """Serializer détaillé avec contrats et certifications."""
     certifications = StaffCertificationSerializer(many=True, read_only=True)
     active_contract = serializers.SerializerMethodField()
 
@@ -115,13 +135,45 @@ class StaffDetailSerializer(StaffListSerializer):
 
 
 class StaffWriteSerializer(serializers.ModelSerializer):
-    """Pour la création / mise à jour."""
+    """Création / mise à jour avec rôles et spécialités."""
+    roles = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Role.objects.all(), required=False
+    )
+    specialties = serializers.PrimaryKeyRelatedField(
+        many=True, queryset=Specialty.objects.all(), required=False
+    )
+
     class Meta:
         model = Staff
-        fields = ["id", "first_name", "last_name", "email", "phone", "is_active"]
+        fields = ["id", "first_name", "last_name", "email", "phone",
+                  "is_active", "roles", "specialties"]
+
+    def create(self, validated_data):
+        roles = validated_data.pop("roles", [])
+        specialties = validated_data.pop("specialties", [])
+        staff = super().create(validated_data)
+        for role in roles:
+            StaffRole.objects.create(staff=staff, role=role)
+        for spec in specialties:
+            StaffSpecialty.objects.create(staff=staff, specialty=spec)
+        return staff
+
+    def update(self, instance, validated_data):
+        roles = validated_data.pop("roles", None)
+        specialties = validated_data.pop("specialties", None)
+        staff = super().update(instance, validated_data)
+        if roles is not None:
+            StaffRole.objects.filter(staff=staff).delete()
+            for role in roles:
+                StaffRole.objects.create(staff=staff, role=role)
+        if specialties is not None:
+            StaffSpecialty.objects.filter(staff=staff).delete()
+            for spec in specialties:
+                StaffSpecialty.objects.create(staff=staff, specialty=spec)
+        return staff
 
 
-# ── Service / CareUnit ────────────────────────────────────────────────────────
+# ── Service / CareUnit ───────────────────────────────────────────────────────
 
 class CareUnitSerializer(serializers.ModelSerializer):
     class Meta:
@@ -137,7 +189,7 @@ class ServiceSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "manager", "bed_capacity", "criticality_level", "care_units"]
 
 
-# ── Shift ─────────────────────────────────────────────────────────────────────
+# ── Shift ────────────────────────────────────────────────────────────────────
 
 class ShiftListSerializer(serializers.ModelSerializer):
     care_unit_name = serializers.CharField(source="care_unit.name", read_only=True)
@@ -164,11 +216,8 @@ class ShiftListSerializer(serializers.ModelSerializer):
 
 class ShiftWriteSerializer(serializers.ModelSerializer):
     required_certification_ids = serializers.PrimaryKeyRelatedField(
-        many=True,
-        queryset=Certification.objects.all(),
-        write_only=True,
-        source="required_certifications",
-        required=False,
+        many=True, queryset=Certification.objects.all(),
+        write_only=True, source="required_certifications", required=False,
     )
 
     class Meta:
@@ -192,7 +241,7 @@ class ShiftWriteSerializer(serializers.ModelSerializer):
         return shift
 
 
-# ── ShiftAssignment ───────────────────────────────────────────────────────────
+# ── ShiftAssignment ──────────────────────────────────────────────────────────
 
 class ShiftAssignmentSerializer(serializers.ModelSerializer):
     staff_name = serializers.SerializerMethodField()
@@ -211,19 +260,18 @@ class ShiftAssignmentSerializer(serializers.ModelSerializer):
 
 
 class ShiftAssignmentCreateSerializer(serializers.Serializer):
-    """Serializer dédié à la création avec validation des contraintes dures."""
-    staff_id = serializers.IntegerField()
-    shift_id = serializers.IntegerField()
+    staff = serializers.IntegerField()
+    shift = serializers.IntegerField()
 
     def validate(self, attrs):
         from .validators import validate_assignment
         try:
-            staff = Staff.objects.get(pk=attrs["staff_id"])
-            shift = Shift.objects.get(pk=attrs["shift_id"])
+            staff = Staff.objects.get(pk=attrs["staff"])
+            shift = Shift.objects.get(pk=attrs["shift"])
         except Staff.DoesNotExist:
-            raise serializers.ValidationError({"staff_id": "Soignant introuvable."})
+            raise serializers.ValidationError({"staff": "Soignant introuvable."})
         except Shift.DoesNotExist:
-            raise serializers.ValidationError({"shift_id": "Poste introuvable."})
+            raise serializers.ValidationError({"shift": "Poste introuvable."})
 
         result = validate_assignment(staff, shift)
         if not result["ok"]:
@@ -232,18 +280,18 @@ class ShiftAssignmentCreateSerializer(serializers.Serializer):
                 "detail": result.get("detail", "Contrainte violée."),
             })
 
-        attrs["staff"] = staff
-        attrs["shift"] = shift
+        attrs["staff_obj"] = staff
+        attrs["shift_obj"] = shift
         return attrs
 
     def create(self, validated_data):
         return ShiftAssignment.objects.create(
-            staff=validated_data["staff"],
-            shift=validated_data["shift"],
+            staff=validated_data["staff_obj"],
+            shift=validated_data["shift_obj"],
         )
 
 
-# ── Absence ───────────────────────────────────────────────────────────────────
+# ── Absence ──────────────────────────────────────────────────────────────────
 
 class AbsenceSerializer(serializers.ModelSerializer):
     absence_type_name = serializers.CharField(source="absence_type.name", read_only=True)
@@ -261,9 +309,10 @@ class AbsenceSerializer(serializers.ModelSerializer):
         return f"{obj.staff.first_name} {obj.staff.last_name}"
 
 
-# ── Preference ────────────────────────────────────────────────────────────────
+# ── Preference ───────────────────────────────────────────────────────────────
 
 class PreferenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Preference
-        fields = ["id", "staff", "type", "description", "is_hard_constraint", "start_date", "end_date"]
+        fields = ["id", "staff", "type", "description",
+                  "is_hard_constraint", "start_date", "end_date"]

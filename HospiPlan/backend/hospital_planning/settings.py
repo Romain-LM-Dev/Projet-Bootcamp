@@ -21,6 +21,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     # Tiers
     "rest_framework",
+    "rest_framework.authtoken",
     "corsheaders",
     # Application
     "planning",
@@ -92,7 +93,8 @@ REST_FRAMEWORK = {
         "rest_framework.parsers.JSONParser",
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
-        "rest_framework.authentication.SessionAuthentication",
+        "rest_framework.authentication.TokenAuthentication",
+        # "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",  # À restreindre en prod avec JWT
@@ -106,6 +108,16 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# Origines de confiance pour CSRF (React en dev)
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+]
+
+CSRF_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = False 
 
 # ── Durée de repos post-garde de nuit (configurable) ─────────────────────────
 NIGHT_REST_HOURS = int(os.environ.get("NIGHT_REST_HOURS", "11"))
