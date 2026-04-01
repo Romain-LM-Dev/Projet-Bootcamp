@@ -82,4 +82,15 @@ export const api = {
     update: (id, data) => request(`/contracts/${id}/`, { method: "PATCH", body: data }),
     delete: (id)      => request(`/contracts/${id}/`, { method: "DELETE" }),
   },
+
+  // ─── Planning automatique ──────────────────────────────────────
+  planning: {
+    generate: (data) => request("/plannings/generate/", { method: "POST", body: data }),
+    score:    (params) => {
+      const qs = new URLSearchParams(params).toString();
+      return request(`/plannings/score/?${qs}`);
+    },
+  },
+
+  services: () => request("/services/"),
 };

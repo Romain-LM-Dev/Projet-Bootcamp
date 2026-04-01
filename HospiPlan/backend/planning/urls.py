@@ -36,4 +36,8 @@ urlpatterns = [
     path("shift-types/",                    views.ShiftTypeListView.as_view(),                name="shift-type-list"),
     path("absence-types/",                  views.AbsenceTypeListView.as_view(),              name="absence-type-list"),
     path("services/",                       views.ServiceListView.as_view(),                  name="service-list"),
+
+    # ── Génération automatique de planning ─────────────────────
+    path("plannings/generate/",             views.PlanningGenerateView.as_view(),             name="planning-generate"),
+    path("plannings/score/",                views.PlanningScoreView.as_view(),                name="planning-score"),
 ]

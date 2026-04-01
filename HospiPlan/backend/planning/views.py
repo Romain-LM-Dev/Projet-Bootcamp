@@ -14,6 +14,7 @@ from .models import (
     Certification, ContractType, ShiftType, Service,
     Role, Specialty, StaffCertification, Contract,
 )
+from .optimizer import generate_planning, SoftConstraintPenalty
 from .serializers import (
     StaffListSerializer, StaffDetailSerializer, StaffWriteSerializer,
     ShiftListSerializer, ShiftWriteSerializer,
@@ -317,3 +318,170 @@ class ServiceListView(APIView):
     def get(self, request):
         qs = Service.objects.prefetch_related("care_units")
         return Response(ServiceSerializer(qs, many=True).data)
+
+
+# ─── Génération automatique de planning ───────────────────────────────────────
+
+class PlanningGenerateView(APIView):
+    """
+    Génère automatiquement un planning pour une période donnée.
+    POST /api/plannings/generate/
+    
+    Body:
+    {
+        "start_date": "2024-01-15",
+        "end_date": "2024-01-21",
+        "service_id": 1,          // optionnel
+        "care_unit_id": 2,        // optionnel
+        "save": true              // par défaut true
+    }
+    """
+    def post(self, request):
+        from datetime import date as dt_date
+        
+        start_date_str = request.data.get("start_date")
+        end_date_str = request.data.get("end_date")
+        service_id = request.data.get("service_id")
+        care_unit_id = request.data.get("care_unit_id")
+        save = request.data.get("save", True)
+        
+        if not start_date_str or not end_date_str:
+            return error("Les dates de début et de fin sont requises.",
+                         http_status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            from datetime import datetime
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return error("Format de date invalide. Utilisez YYYY-MM-DD.",
+                         http_status=status.HTTP_400_BAD_REQUEST)
+        
+        if start_date > end_date:
+            return error("La date de début doit être antérieure à la date de fin.",
+                         http_status=status.HTTP_400_BAD_REQUEST)
+        
+        # Vérifier que service_id ou care_unit_id existe si fourni
+        if service_id and not Service.objects.filter(id=service_id).exists():
+            return error(f"Service introuvable avec l'id {service_id}.",
+                         http_status=status.HTTP_404_NOT_FOUND)
+        
+        # Lancer la génération
+        try:
+            result = generate_planning(
+                start_date=start_date,
+                end_date=end_date,
+                service_id=service_id,
+                care_unit_id=care_unit_id,
+                save=save,
+            )
+        except Exception as e:
+            return error(f"Erreur lors de la génération : {str(e)}",
+                         http_status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        # Formater la réponse
+        assignments_data = []
+        for assignment in result["assignments"]:
+            assignments_data.append({
+                "id": assignment.id if assignment.id else None,
+                "staff_id": assignment.staff_id,
+                "staff_name": f"{assignment.staff.first_name} {assignment.staff.last_name}",
+                "shift_id": assignment.shift_id,
+                "shift_label": assignment.shift.label,
+                "care_unit": assignment.shift.care_unit.name,
+                "service": assignment.shift.care_unit.service.name,
+                "start_datetime": assignment.shift.start_datetime.isoformat(),
+                "end_datetime": assignment.shift.end_datetime.isoformat(),
+            })
+        
+        uncovered_data = []
+        for item in result["uncovered"]:
+            shift = item["shift"]
+            uncovered_data.append({
+                "shift_id": shift.id,
+                "shift_label": shift.label,
+                "care_unit": shift.care_unit.name,
+                "needed": item["needed"],
+                "assigned": item["assigned"],
+                "reason": item["reason"],
+            })
+        
+        return Response({
+            "success": True,
+            "period": {
+                "start_date": start_date_str,
+                "end_date": end_date_str,
+            },
+            "saved_count": result["saved_count"],
+            "total_assignments": len(assignments_data),
+            "uncovered_shifts": len(uncovered_data),
+            "uncovered": uncovered_data,
+            "score": result["score"],
+            "score_details": result["score_details"],
+            "assignments": assignments_data,
+        })
+
+
+class PlanningScoreView(APIView):
+    """
+    Calcule le score (pénalités) d'un planning existant.
+    GET /api/plannings/score/?start_date=2024-01-15&end_date=2024-01-21&service_id=1
+    """
+    def get(self, request):
+        start_date_str = request.query_params.get("start_date")
+        end_date_str = request.query_params.get("end_date")
+        service_id = request.query_params.get("service_id")
+        
+        if not start_date_str or not end_date_str:
+            return error("Les dates de début et de fin sont requises.",
+                         http_status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            from datetime import datetime
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return error("Format de date invalide. Utilisez YYYY-MM-DD.",
+                         http_status=status.HTTP_400_BAD_REQUEST)
+        
+        # Récupérer les données
+        shifts = Shift.objects.filter(
+            start_datetime__date__gte=start_date,
+            start_datetime__date__lte=end_date,
+        ).select_related("care_unit__service", "shift_type")
+        
+        if service_id:
+            shifts = shifts.filter(care_unit__service_id=service_id)
+        
+        shifts = list(shifts)
+        
+        assignments = ShiftAssignment.objects.filter(
+            shift__in=shifts,
+        ).select_related("staff", "shift")
+        assignments = list(assignments)
+        
+        staff_list = list(Staff.objects.filter(is_active=True))
+        
+        # Calculer le score
+        penalty_calc = SoftConstraintPenalty(
+            shifts=shifts,
+            assignments=assignments,
+            staff_list=staff_list,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        
+        score = penalty_calc.total_penalty()
+        details = penalty_calc.penalty_details()
+        
+        return Response({
+            "period": {
+                "start_date": start_date_str,
+                "end_date": end_date_str,
+            },
+            "total_shifts": len(shifts),
+            "total_assignments": len(assignments),
+            "score": score,
+            "score_details": details,
+            "coverage_rate": len(assignments) / len(shifts) * 100 if shifts else 0,
+        })

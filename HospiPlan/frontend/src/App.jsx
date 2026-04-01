@@ -864,8 +864,20 @@ function PlanningPage({ toast }) {
   const [shifts,     setShifts]     = useState([]);
   const [assigns,    setAssigns]    = useState([]);
   const [absences,   setAbsences]   = useState([]);
+  const [services,   setServices]   = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState(null);
+
+  // Génération automatique
+  const [generating, setGenerating] = useState(false);
+  const [genForm, setGenForm] = useState({
+    start_date: "",
+    end_date: "",
+    service_id: "",
+  });
+  const [genResult, setGenResult] = useState(null);
+  const [showScore, setShowScore] = useState(false);
+  const [scoreData, setScoreData] = useState(null);
 
   const weekDays = useMemo(() => {
     const now    = new Date();
@@ -886,15 +898,27 @@ function PlanningPage({ toast }) {
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [s, sh, a, ab] = await Promise.all([
+      const [s, sh, a, ab, sv] = await Promise.all([
         api.staff.list(), api.shifts.list(), api.assignments.list(), api.absences.list(),
+        api.services(),
       ]);
-      setStaff(s); setShifts(sh); setAssigns(a); setAbsences(ab);
+      setStaff(s); setShifts(sh); setAssigns(a); setAbsences(ab); setServices(sv);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  // Initialiser les dates pour la génération
+  useEffect(() => {
+    const monday = weekDays[0];
+    const sunday = weekDays[6];
+    setGenForm(prev => ({
+      ...prev,
+      start_date: fmt(monday),
+      end_date: fmt(sunday),
+    }));
+  }, [weekDays]);
 
   const weekStart  = fmt(weekDays[0]);
   const weekEnd    = fmt(weekDays[6]);
@@ -923,7 +947,12 @@ function PlanningPage({ toast }) {
   const dayCounts = useMemo(() =>
     weekDays.map(d => {
       const dateStr   = fmt(d);
-      const dayShifts = weekShifts.filter(sh => fmt(new Date(sh.start_datetime)) === dateStr);
+      // Include shifts that start on this day OR end on this day (for night shifts)
+      const dayShifts = weekShifts.filter(sh => {
+        const startDate = fmt(new Date(sh.start_datetime));
+        const endDate = fmt(new Date(sh.end_datetime));
+        return startDate === dateStr || endDate === dateStr;
+      });
       const filled    = assigns.filter(a => dayShifts.some(sh => sh.id === a.shift)).length;
       return { total: dayShifts.length, filled };
     }),
@@ -931,6 +960,56 @@ function PlanningPage({ toast }) {
   );
 
   const weekLabel = `Semaine du ${weekDays[0].toLocaleDateString("fr-FR", { day: "numeric", month: "long" })} au ${weekDays[6].toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}`;
+
+  // ── Gestion génération ──────────────────────────────────────
+  const handleGenerate = async () => {
+    if (!genForm.start_date || !genForm.end_date) {
+      toast("Veuillez sélectionner une période.", "error");
+      return;
+    }
+
+    setGenerating(true);
+    setGenResult(null);
+    try {
+      const payload = {
+        start_date: genForm.start_date,
+        end_date: genForm.end_date,
+        save: true,
+      };
+      if (genForm.service_id) payload.service_id = parseInt(genForm.service_id);
+
+      const result = await api.planning.generate(payload);
+      setGenResult(result);
+      load(); // Recharger les données
+
+      const msg = `Planning généré : ${result.total_assignments} affectations` +
+        (result.uncovered_shifts > 0 ? `, ${result.uncovered_shifts} postes non couverts` : "") +
+        ` (score: ${result.score.toFixed(1)})`;
+      toast(msg, "success");
+    } catch (e) {
+      toast(e.message || "Erreur lors de la génération", "error");
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleScore = async () => {
+    if (!genForm.start_date || !genForm.end_date) {
+      toast("Veuillez sélectionner une période.", "error");
+      return;
+    }
+
+    try {
+      const params = { start_date: genForm.start_date, end_date: genForm.end_date };
+      if (genForm.service_id) params.service_id = genForm.service_id;
+
+      const result = await api.planning.score(params);
+      setScoreData(result);
+      setShowScore(true);
+    } catch (e) {
+      toast(e.message || "Erreur lors du calcul du score", "error");
+    }
+  };
 
   if (loading) return <LoadingState />;
   if (error)   return <ErrorState message={error} onRetry={load} />;
@@ -965,6 +1044,170 @@ function PlanningPage({ toast }) {
           </span>
         ))}
       </div>
+
+      {/* ─── PANNEAU DE GÉNÉRATION ─────────────────────────────── */}
+      <div style={{
+        background: "var(--card)", border: "1px solid var(--border)",
+        borderRadius: 16, padding: 24, marginBottom: 24,
+      }}>
+        <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700 }}>
+          ⚡ Génération automatique du planning
+        </h3>
+        <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--muted)", lineHeight: 1.6 }}>
+          Génère un planning admissible (contraintes dures respectées) en optimisant les contraintes molles
+          (équité, préférences, nuits consécutives, continuité des soins…).
+        </p>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 12, alignItems: "end" }}>
+          <div>
+            <label style={labelStyle}>Date de début</label>
+            <input
+              type="date"
+              value={genForm.start_date}
+              onChange={e => setGenForm(p => ({ ...p, start_date: e.target.value }))}
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Date de fin</label>
+            <input
+              type="date"
+              value={genForm.end_date}
+              onChange={e => setGenForm(p => ({ ...p, end_date: e.target.value }))}
+              style={inputStyle}
+            />
+          </div>
+          <div>
+            <label style={labelStyle}>Service (optionnel)</label>
+            <select
+              value={genForm.service_id}
+              onChange={e => setGenForm(p => ({ ...p, service_id: e.target.value }))}
+              style={selectStyle}
+            >
+              <option value="">Tous les services</option>
+              {services.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              style={{
+                background: "var(--accent)", color: "#fff", border: "none",
+                borderRadius: 8, padding: "9px 20px", fontSize: 13,
+                fontWeight: 600, cursor: generating ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", gap: 6,
+                opacity: generating ? 0.7 : 1,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {generating && <IconSpinner />}
+              Générer
+            </button>
+            <button
+              onClick={handleScore}
+              style={{
+                background: "var(--surface)", color: "var(--text)",
+                border: "1px solid var(--border)", borderRadius: 8,
+                padding: "9px 16px", fontSize: 13, fontWeight: 500,
+                cursor: "pointer",
+              }}
+            >
+              Voir score
+            </button>
+          </div>
+        </div>
+
+        {/* Résultat de génération */}
+        {genResult && (
+          <div style={{
+            marginTop: 20, padding: 16, borderRadius: 10,
+            background: genResult.success ? "#eff6ff" : "#fef2f2",
+            border: `1px solid ${genResult.success ? "#bfdbfe" : "#fecaca"}`,
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: genResult.success ? "#1e40af" : "#991b1b" }}>
+              {genResult.success ? "✅ Génération terminée" : "⚠️ Génération partiellement réussie"}
+            </div>
+            <div style={{ fontSize: 12, color: "var(--muted)", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 16px" }}>
+              <div>📋 Affectations créées : <strong>{genResult.total_assignments}</strong></div>
+              <div>💾 Sauvegardées : <strong>{genResult.saved_count}</strong></div>
+              <div>🎯 Score global : <strong>{genResult.score.toFixed(1)}</strong></div>
+              <div>⚠️ Postes non couverts : <strong>{genResult.uncovered_shifts}</strong></div>
+            </div>
+            {genResult.uncovered.length > 0 && (
+              <div style={{ marginTop: 12, fontSize: 12, color: "#991b1b" }}>
+                <details>
+                  <summary style={{ cursor: "pointer", fontWeight: 600 }}>Détail des postes non couverts ({genResult.uncovered.length})</summary>
+                  <ul style={{ marginTop: 8, paddingLeft: 20 }}>
+                    {genResult.uncovered.slice(0, 5).map((u, i) => (
+                      <li key={i}>{u.shift_label} — {u.reason}</li>
+                    ))}
+                    {genResult.uncovered.length > 5 && (
+                      <li>… et {genResult.uncovered.length - 5} autres</li>
+                    )}
+                  </ul>
+                </details>
+              </div>
+            )}
+            <div style={{ marginTop: 12, fontSize: 12, color: "var(--muted)" }}>
+              <details>
+                <summary style={{ cursor: "pointer", fontWeight: 600 }}>Détail des pénalités (contraintes molles)</summary>
+                <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 16px", fontSize: 11 }}>
+                  <div>Nuits consécutives : <strong>{genResult.score_details.consecutive_nights?.toFixed(1)}</strong></div>
+                  <div>Préférences : <strong>{genResult.score_details.preferences?.toFixed(1)}</strong></div>
+                  <div>Équilibre charge : <strong>{genResult.score_details.workload_balance?.toFixed(1)}</strong></div>
+                  <div>Changements service : <strong>{genResult.score_details.service_changes?.toFixed(1)}</strong></div>
+                  <div>Équité week-end : <strong>{genResult.score_details.weekend_equity?.toFixed(1)}</strong></div>
+                  <div>Période adaptation : <strong>{genResult.score_details.adaptation_period?.toFixed(1)}</strong></div>
+                  <div>Continuité soins : <strong>{genResult.score_details.continuity?.toFixed(1)}</strong></div>
+                </div>
+              </details>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ─── MODALE SCORE ───────────────────────────────────────── */}
+      {showScore && scoreData && (
+        <Modal title="Score du planning" onClose={() => setShowScore(false)}>
+          <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 16 }}>
+            Période : {scoreData.period.start_date} → {scoreData.period.end_date}
+          </div>
+          <div style={{ display: "grid", gap: 12, marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface)", borderRadius: 8 }}>
+              <span>Postes à couvrir</span>
+              <strong>{scoreData.total_shifts}</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface)", borderRadius: 8 }}>
+              <span>Affectations existantes</span>
+              <strong>{scoreData.total_assignments}</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "var(--surface)", borderRadius: 8 }}>
+              <span>Taux de couverture</span>
+              <strong>{scoreData.coverage_rate?.toFixed(1)}%</strong>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: scoreData.score < 50 ? "#eff6ff" : "#fef2f2", borderRadius: 8, border: `1px solid ${scoreData.score < 50 ? "#bfdbfe" : "#fecaca"}` }}>
+              <span style={{ fontWeight: 600 }}>Score global (pénalités)</span>
+              <strong style={{ color: scoreData.score < 50 ? "#1e40af" : "#991b1b" }}>{scoreData.score.toFixed(1)}</strong>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+            Détail des pénalités
+          </div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {Object.entries(scoreData.score_details).map(([key, value]) => (
+              <div key={key} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 10px", background: "var(--surface)", borderRadius: 6 }}>
+                <span style={{ textTransform: "capitalize" }}>
+                  {key.replace(/_/g, " ")}
+                </span>
+                <strong>{value?.toFixed(1)}</strong>
+              </div>
+            ))}
+          </div>
+        </Modal>
+      )}
 
       {staff.length === 0 ? (
         <div style={{ textAlign: "center", padding: "60px 0", color: "var(--muted)", fontSize: 14 }}>Aucun soignant enregistré.</div>
