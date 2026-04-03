@@ -21,6 +21,12 @@ class AbsenceViewSet(viewsets.ModelViewSet):
         staff_id = self.request.query_params.get('staff')
         if staff_id:
             qs = qs.filter(staff_id=staff_id)
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            qs = qs.filter(expected_end_date__gte=start_date)
+        if end_date:
+            qs = qs.filter(start_date__lte=end_date)
         return qs
 
 
@@ -55,6 +61,12 @@ class ShiftAssignmentViewSet(viewsets.ModelViewSet):
         shift_id = self.request.query_params.get('shift')
         if shift_id:
             qs = qs.filter(shift_id=shift_id)
+        start_date = self.request.query_params.get('start_date')
+        if start_date:
+            qs = qs.filter(shift__start_datetime__date__gte=start_date)
+        end_date = self.request.query_params.get('end_date')
+        if end_date:
+            qs = qs.filter(shift__start_datetime__date__lte=end_date)
         return qs
 
 

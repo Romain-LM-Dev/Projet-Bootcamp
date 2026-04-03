@@ -11,6 +11,7 @@ from staff.views import StaffViewSet, RoleViewSet, SpecialtyViewSet, Certificati
 from shifts.views import ShiftViewSet, ShiftTemplateViewSet
 from planning.views import AbsenceViewSet, PreferenceViewSet, ShiftAssignmentViewSet, PlanningSnapshotViewSet
 from optimization.views import OptimizationAlgorithmViewSet, OptimizationConfigViewSet, OptimizationRunViewSet, OptimizationResultViewSet, GeneratePlanningView
+from core.views import AuthLoginView, AuthLogoutView, AuthUserView
 
 # Create router
 router = DefaultRouter()
@@ -49,6 +50,9 @@ router.register(r'optimization-results', OptimizationResultViewSet)
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include(router.urls)),
-    path('api/auth/', include('rest_framework.urls')),
+    # Custom auth endpoints
+    path('api/auth/login/', AuthLoginView.as_view(), name='auth-login'),
+    path('api/auth/logout/', AuthLogoutView.as_view(), name='auth-logout'),
+    path('api/auth/user/', AuthUserView.as_view(), name='auth-user'),
     path('api/generate/', GeneratePlanningView.as_view(), name='generate-planning'),
 ]

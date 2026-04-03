@@ -6,13 +6,14 @@ from .models import Shift, ShiftTemplate, ShiftSwapRequest
 class ShiftSerializer(serializers.ModelSerializer):
     care_unit_name = serializers.CharField(source='care_unit.name', read_only=True)
     service_name = serializers.CharField(source='care_unit.service.name', read_only=True)
+    service = serializers.IntegerField(source='care_unit.service_id', read_only=True)
     shift_type_name = serializers.CharField(source='shift_type.name', read_only=True)
     assigned_count = serializers.SerializerMethodField()
     label = serializers.SerializerMethodField()
 
     class Meta:
         model = Shift
-        fields = ['id', 'label', 'care_unit', 'care_unit_name', 'service_name',
+        fields = ['id', 'label', 'care_unit', 'care_unit_name', 'service', 'service_name',
                   'shift_type', 'shift_type_name', 'start_datetime', 'end_datetime',
                   'min_staff', 'max_staff', 'assigned_count', 'is_active', 'notes']
 

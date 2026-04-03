@@ -1,173 +1,776 @@
-import { BrowserRouter, Routes, Route, Link, NavLink } from 'react-router-dom'
-import { useState, useEffect } from 'react'
+import { BrowserRouter, Link, NavLink, Route, Routes } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
 import api, { endpoints } from './api'
+import { useAuth } from './AuthContext'
 import './App.css'
 
-// Components
-function Navigation() {
-  return (
-    <nav className="navbar">
-      <div className="nav-brand">
-        <Link to="/">🏥 HospiPlan2</Link>
-      </div>
-      <div className="nav-links">
-        <NavLink to="/staff" className={({ isActive }) => isActive ? 'active' : ''}>
-          👥 Personnel
-        </NavLink>
-        <NavLink to="/shifts" className={({ isActive }) => isActive ? 'active' : ''}>
-          📅 Postes
-        </NavLink>
-        <NavLink to="/planning" className={({ isActive }) => isActive ? 'active' : ''}>
-          📋 Planning
-        </NavLink>
-        <NavLink to="/optimization" className={({ isActive }) => isActive ? 'active' : ''}>
-          🤖 Génération
-        </NavLink>
-        <NavLink to="/config" className={({ isActive }) => isActive ? 'active' : ''}>
-          ⚙️ Config
-        </NavLink>
-      </div>
-    </nav>
-  )
+const SHIFT_TYPE_COLORS = {
+  Jour: '#2563eb',
+  Soir: '#f59e0b',
+  Nuit: '#7c3aed',
+  '12h Jour': '#0f766e',
+  '12h Nuit': '#9333ea',
 }
 
-function Dashboard() {
-  const [stats, setStats] = useState({
-    staff: 0,
-    shifts: 0,
-    assignments: 0,
-    absences: 0
+const STATUS_VARIANTS = {
+  completed: 'success',
+  success: 'success',
+  running: 'warning',
+  pending: 'warning',
+  in_progress: 'warning',
+  failed: 'danger',
+  error: 'danger',
+  default: 'neutral',
+}
+
+function normalizeListResponse(data) {
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data?.results)) return data.results
+  return []
+}
+
+function extractCount(data) {
+  if (typeof data?.count === 'number') return data.count
+  return normalizeListResponse(data).length
+}
+
+function toDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getWeekStartFromDate(value = new Date()) {
+  const date = value instanceof Date ? new Date(value) : new Date(value)
+  const day = date.getDay()
+  const diff = day === 0 ? -6 : 1 - day
+  date.setDate(date.getDate() + diff)
+  return toDateKey(date)
+}
+
+function getWeekDays(weekStart) {
+  const start = new Date(weekStart)
+  return Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(start)
+    date.setDate(start.getDate() + index)
+    return date
   })
+}
 
-  useEffect(() => {
-    const fetchStats = async () => {
-      try {
-        const [staffRes, shiftsRes, assignmentsRes, absencesRes] = await Promise.all([
-          api.get(endpoints.staff),
-          api.get(endpoints.shifts),
-          api.get(endpoints.assignments),
-          api.get(endpoints.absences)
-        ])
-        setStats({
-          staff: staffRes.data.count || 0,
-          shifts: shiftsRes.data.count || 0,
-          assignments: assignmentsRes.data.count || 0,
-          absences: absencesRes.data.count || 0
-        })
-      } catch (error) {
-        console.error('Error fetching stats:', error)
-      }
+function groupAssignmentsByShift(assignments) {
+  return assignments.reduce((acc, assignment) => {
+    const shiftId = typeof assignment.shift === 'object' ? assignment.shift?.id : assignment.shift
+    if (!shiftId) return acc
+    if (!acc[shiftId]) acc[shiftId] = []
+    acc[shiftId].push(assignment)
+    return acc
+  }, {})
+}
+
+function filterShifts({ shifts, serviceId, careUnitId, weekStart, weekEnd }) {
+  return shifts.filter((shift) => {
+    const shiftDate = toDateKey(shift.start_datetime)
+    const shiftServiceId = String(shift.service ?? shift.service_id ?? shift.care_unit_service ?? '')
+    const shiftCareUnitId = String(shift.care_unit ?? shift.care_unit_id ?? '')
+    const matchService = !serviceId || shiftServiceId === String(serviceId)
+    const matchCareUnit = !careUnitId || shiftCareUnitId === String(careUnitId)
+    const matchWeek = shiftDate >= weekStart && shiftDate <= weekEnd
+    return matchService && matchCareUnit && matchWeek
+  })
+}
+
+function formatDate(date, options = {}) {
+  return new Intl.DateTimeFormat('fr-FR', options).format(date)
+}
+
+function formatDateTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleString('fr-FR')
+}
+
+function getStatusVariant(status) {
+  return STATUS_VARIANTS[status] || STATUS_VARIANTS.default
+}
+
+function getShiftTypeColor(name) {
+  return SHIFT_TYPE_COLORS[name] || '#64748b'
+}
+
+function AppShell({ children }) {
+  const { user, isAuthenticated, isAdmin, logout, isLoading } = useAuth()
+
+  const getInitials = (name) => {
+    if (!name) return 'U'
+    const parts = name.split(' ')
+    if (parts.length >= 2) {
+      return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase()
     }
-    fetchStats()
-  }, [])
+    return name.substring(0, 2).toUpperCase()
+  }
 
-  return (
-    <div className="dashboard">
-      <h1>🏥 HospiPlan2 - Tableau de bord</h1>
-      <div className="stats-grid">
-        <div className="stat-card">
-          <span className="stat-icon">👥</span>
-          <span className="stat-value">{stats.staff}</span>
-          <span className="stat-label">Personnels</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-icon">📅</span>
-          <span className="stat-value">{stats.shifts}</span>
-          <span className="stat-label">Postes</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-icon">📋</span>
-          <span className="stat-value">{stats.assignments}</span>
-          <span className="stat-label">Affectations</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-icon">⚠️</span>
-          <span className="stat-value">{stats.absences}</span>
-          <span className="stat-label">Absences</span>
+  const userDisplay = isAuthenticated ? user : null
+  const userInitials = userDisplay
+    ? getInitials(userDisplay.first_name ? `${userDisplay.first_name} ${userDisplay.last_name}` : userDisplay.username)
+    : 'U'
+
+  if (isLoading) {
+    return (
+      <div className="app-shell">
+        <aside className="sidebar">
+          <div className="brand-card">
+            <div className="brand-mark">HP2</div>
+            <div>
+              <p className="eyebrow">Plateforme hospitalière</p>
+              <h1>HospiPlan2</h1>
+            </div>
+          </div>
+        </aside>
+        <div className="app-body">
+          <main className="page-content" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+            <div style={{ textAlign: 'center' }}>
+              <div className="spinner" style={{ margin: '0 auto 16px' }}></div>
+              <p>Chargement...</p>
+            </div>
+          </main>
         </div>
       </div>
-      <div className="quick-actions">
-        <h2>Actions rapides</h2>
-        <div className="action-buttons">
-          <Link to="/staff" className="action-btn">
-            ➕ Ajouter du personnel
-          </Link>
-          <Link to="/shifts" className="action-btn">
-            ➕ Créer un poste
-          </Link>
-          <Link to="/optimization" className="action-btn action-btn-primary">
-            🤖 Générer un planning
-          </Link>
+    )
+  }
+
+  return (
+    <div className="app-shell">
+      <aside className="sidebar">
+        <Link to="/" className="brand-card">
+          <div className="brand-mark">HP2</div>
+          <div>
+            <p className="eyebrow">Plateforme hospitalière</p>
+            <h1>HospiPlan2</h1>
+          </div>
+        </Link>
+
+        <nav className="sidebar-nav">
+          <NavLink to="/" end className="nav-item">
+            <span>Vue d'ensemble</span>
+          </NavLink>
+          <NavLink to="/planning" className="nav-item">
+            <span>Planning</span>
+          </NavLink>
+          <NavLink to="/staff" className="nav-item">
+            <span>Personnel</span>
+          </NavLink>
+          <NavLink to="/shifts" className="nav-item">
+            <span>Postes</span>
+          </NavLink>
+          <NavLink to="/optimization" className="nav-item">
+            <span>Génération auto</span>
+          </NavLink>
+          <NavLink to="/config" className="nav-item">
+            <span>Configuration</span>
+          </NavLink>
+        </nav>
+
+        <div className="sidebar-panel">
+          <p className="panel-label">Centre de pilotage</p>
+          <strong>Gestion des plannings</strong>
+          <span>Organisation des équipes, suivi des postes et accès à l'administration technique.</span>
         </div>
+      </aside>
+
+      <div className="app-body">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">Pilotage hospitalier</p>
+            <h2>Organisation des gardes et affectations</h2>
+          </div>
+          <div className="topbar-user">
+            <div className="user-avatar">{userInitials}</div>
+            <div>
+              {isAuthenticated ? (
+                <>
+                  <strong>{userDisplay.first_name ? `${userDisplay.first_name} ${userDisplay.last_name}` : userDisplay.username}</strong>
+                  <span>{isAdmin ? 'Administrateur' : 'Utilisateur'}</span>
+                </>
+              ) : (
+                <>
+                  <strong>Non connecté</strong>
+                  <span>Connectez-vous pour accéder à l'administration</span>
+                </>
+              )}
+            </div>
+            {isAuthenticated && (
+              <button onClick={logout} className="btn btn-secondary btn-sm" style={{ marginLeft: '12px' }}>
+                Déconnexion
+              </button>
+            )}
+          </div>
+        </header>
+
+        <main className="page-content">{children}</main>
       </div>
     </div>
   )
 }
 
-function StaffList() {
+function PageHeader({ title, subtitle, badge, actions }) {
+  return (
+    <div className="page-header">
+      <div>
+        <p className="eyebrow">{subtitle}</p>
+        <div className="page-title-row">
+          <h1>{title}</h1>
+          {badge ? <span className="page-badge">{badge}</span> : null}
+        </div>
+      </div>
+      {actions ? <div className="page-actions">{actions}</div> : null}
+    </div>
+  )
+}
+
+function LoadingState({ label = 'Chargement des données...' }) {
+  return (
+    <div className="state-card">
+      <div className="spinner" />
+      <p>{label}</p>
+    </div>
+  )
+}
+
+function EmptyState({ title, description }) {
+  return (
+    <div className="state-card empty">
+      <h3>{title}</h3>
+      <p>{description}</p>
+    </div>
+  )
+}
+
+function StatusBadge({ children, variant = 'neutral' }) {
+  return <span className={`status-badge ${variant}`}>{children}</span>
+}
+
+function StatCard({ label, value, hint, tone = 'default' }) {
+  return (
+    <div className={`stat-card tone-${tone}`}>
+      <span className="stat-label">{label}</span>
+      <strong className="stat-value">{value}</strong>
+      <span className="stat-hint">{hint}</span>
+    </div>
+  )
+}
+
+function DataTable({ columns, rows, keyField, emptyTitle, emptyDescription }) {
+  if (!rows.length) {
+    return <EmptyState title={emptyTitle} description={emptyDescription} />
+  }
+
+  return (
+    <div className="table-card">
+      <table className="data-table">
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column.key}>{column.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row[keyField]}>
+              {columns.map((column) => (
+                <td key={column.key}>{column.render ? column.render(row) : row[column.key]}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function DashboardPage() {
+  const [stats, setStats] = useState({ staff: 0, shifts: 0, assignments: 0, absences: 0 })
+  const [recentRuns, setRecentRuns] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchDashboard = async () => {
+      try {
+        const [staffRes, shiftsRes, assignmentsRes, absencesRes, runsRes] = await Promise.all([
+          api.get(endpoints.staff),
+          api.get(endpoints.shifts),
+          api.get(endpoints.assignments),
+          api.get(endpoints.absences),
+          api.get(endpoints.optimizationRuns),
+        ])
+
+        setStats({
+          staff: extractCount(staffRes.data),
+          shifts: extractCount(shiftsRes.data),
+          assignments: extractCount(assignmentsRes.data),
+          absences: extractCount(absencesRes.data),
+        })
+        setRecentRuns(normalizeListResponse(runsRes.data).slice(0, 4))
+      } catch (error) {
+        console.error('Dashboard loading error:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchDashboard()
+  }, [])
+
+  if (loading) return <LoadingState label="Chargement du tableau de bord..." />
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        title="Tableau de bord"
+        subtitle="Supervision globale"
+        badge="Temps réel"
+        actions={
+          <>
+            <Link to="/planning" className="btn btn-secondary">
+              Consulter le planning
+            </Link>
+            <Link to="/optimization" className="btn btn-primary">
+              Lancer une génération
+            </Link>
+          </>
+        }
+      />
+
+      <section className="stats-grid">
+        <StatCard label="Personnel actif" value={stats.staff} hint="Ressources disponibles" tone="blue" />
+        <StatCard label="Postes planifiés" value={stats.shifts} hint="Période en base" tone="amber" />
+        <StatCard label="Affectations" value={stats.assignments} hint="Assignations enregistrées" tone="green" />
+        <StatCard label="Absences" value={stats.absences} hint="Situations à anticiper" tone="purple" />
+      </section>
+
+      <section className="dashboard-grid">
+        <div className="panel-card hero-card">
+          <div>
+            <p className="eyebrow">Centre de coordination</p>
+            <h3>Un pilotage plus clair des plannings hospitaliers</h3>
+            <p>
+              Consultez rapidement la couverture, détectez les tensions sur les équipes et lancez une
+              génération automatisée depuis une interface structurée et lisible.
+            </p>
+          </div>
+          <div className="hero-actions">
+            <Link to="/staff" className="btn btn-secondary">
+              Voir le personnel
+            </Link>
+            <Link to="/shifts" className="btn btn-secondary">
+              Voir les postes
+            </Link>
+          </div>
+        </div>
+
+        <div className="panel-card">
+          <div className="panel-card-header">
+            <h3>Dernières générations</h3>
+            <Link to="/optimization" className="text-link">
+              Historique
+            </Link>
+          </div>
+
+          {recentRuns.length ? (
+            <div className="activity-list">
+              {recentRuns.map((run) => (
+                <div key={run.id} className="activity-item">
+                  <div>
+                    <strong>{run.name}</strong>
+                    <p>
+                      {run.created_at ? formatDate(new Date(run.created_at), { dateStyle: 'medium' }) : 'Date inconnue'} ·
+                      Couverture {run.coverage_rate ?? 0}%
+                    </p>
+                  </div>
+                  <StatusBadge variant={getStatusVariant(run.status)}>
+                    {run.status === 'completed' ? 'Terminé' : run.status}
+                  </StatusBadge>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              title="Aucune génération récente"
+              description="Lancez une génération automatique pour alimenter l’activité récente."
+            />
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function PlanningPage() {
+  const [assignments, setAssignments] = useState([])
+  const [shifts, setShifts] = useState([])
   const [staff, setStaff] = useState([])
+  const [services, setServices] = useState([])
+  const [careUnits, setCareUnits] = useState([])
+  const [shiftTypes, setShiftTypes] = useState([])
+  const [absences, setAbsences] = useState([])
+  const [selectedService, setSelectedService] = useState('')
+  const [selectedCareUnit, setSelectedCareUnit] = useState('')
+  const [weekStart, setWeekStart] = useState(getWeekStartFromDate())
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const fetchPlanning = async () => {
+      setLoading(true)
+      try {
+        const currentWeekEnd = toDateKey(getWeekDays(weekStart)[6])
+        const [assignmentsRes, shiftsRes, staffRes, servicesRes, careUnitsRes, shiftTypesRes, absencesRes] = await Promise.all([
+          api.get(`${endpoints.assignments}?start_date=${weekStart}&end_date=${currentWeekEnd}`),
+          api.get(`${endpoints.shifts}?start_date=${weekStart}&end_date=${currentWeekEnd}`),
+          api.get(endpoints.staff),
+          api.get(endpoints.services),
+          api.get(endpoints.careUnits),
+          api.get(endpoints.shiftTypes),
+          api.get(`${endpoints.absences}?start_date=${weekStart}&end_date=${currentWeekEnd}`),
+        ])
+
+        setAssignments(normalizeListResponse(assignmentsRes.data))
+        setShifts(normalizeListResponse(shiftsRes.data))
+        setStaff(normalizeListResponse(staffRes.data))
+        setServices(normalizeListResponse(servicesRes.data))
+        setCareUnits(normalizeListResponse(careUnitsRes.data))
+        setShiftTypes(normalizeListResponse(shiftTypesRes.data))
+        setAbsences(normalizeListResponse(absencesRes.data))
+      } catch (error) {
+        console.error('Planning loading error:', error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchPlanning()
+  }, [weekStart])
+
+  const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart])
+  const weekEnd = useMemo(() => toDateKey(weekDays[6]), [weekDays])
+  const assignmentsByShift = useMemo(() => groupAssignmentsByShift(assignments), [assignments])
+
+  // Filter absences for the current week
+  const absencesThisWeek = useMemo(() => {
+    return absences.filter((absence) => {
+      const absenceStart = toDateKey(absence.start_date)
+      const absenceEnd = toDateKey(absence.expected_end_date || absence.start_date)
+      // Check if absence overlaps with the current week
+      return absenceEnd >= weekStart && absenceStart <= weekEnd
+    })
+  }, [absences, weekStart, weekEnd])
+
+  // Get absences by date
+  const absencesByDate = useMemo(() => {
+    const byDate = {}
+    absencesThisWeek.forEach((absence) => {
+      const start = new Date(absence.start_date)
+      const end = new Date(absence.expected_end_date || absence.start_date)
+      // Mark all days in the absence range
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const dateKey = toDateKey(d)
+        if (dateKey >= weekStart && dateKey <= weekEnd) {
+          if (!byDate[dateKey]) byDate[dateKey] = []
+          byDate[dateKey].push(absence)
+        }
+      }
+    })
+    return byDate
+  }, [absencesThisWeek, weekStart, weekEnd])
+
+  const availableCareUnits = useMemo(() => {
+    return careUnits.filter((unit) => !selectedService || String(unit.service) === String(selectedService))
+  }, [careUnits, selectedService])
+
+  const visibleShifts = useMemo(
+    () =>
+      filterShifts({
+        shifts,
+        serviceId: selectedService,
+        careUnitId: selectedCareUnit,
+        weekStart,
+        weekEnd,
+      }),
+    [selectedCareUnit, selectedService, shifts, weekEnd, weekStart]
+  )
+
+  const shiftTypesById = useMemo(() => {
+    return shiftTypes.reduce((acc, type) => {
+      acc[type.id] = type.name
+      return acc
+    }, {})
+  }, [shiftTypes])
+
+  const staffMap = useMemo(() => {
+    return staff.reduce((acc, person) => {
+      acc[person.id] = `${person.first_name ?? ''} ${person.last_name ?? ''}`.trim()
+      return acc
+    }, {})
+  }, [staff])
+
+  const groupedByCareUnit = useMemo(() => {
+    const group = {}
+    visibleShifts.forEach((shift) => {
+      const careUnitId = shift.care_unit ?? shift.care_unit_id ?? 'unknown'
+      const careUnitName =
+        shift.care_unit_name ||
+        careUnits.find((unit) => unit.id === careUnitId)?.name ||
+        'Unité inconnue'
+
+      if (!group[careUnitId]) {
+        group[careUnitId] = { id: careUnitId, name: careUnitName, shiftsByDay: {} }
+      }
+
+      const key = toDateKey(shift.start_datetime)
+      if (!group[careUnitId].shiftsByDay[key]) {
+        group[careUnitId].shiftsByDay[key] = []
+      }
+      group[careUnitId].shiftsByDay[key].push(shift)
+    })
+
+    return Object.values(group)
+  }, [visibleShifts, careUnits])
+
+  if (loading) return <LoadingState label="Chargement du planning..." />
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        title="Planning hebdomadaire"
+        subtitle="Visualisation opérationnelle"
+        badge={`${groupedByCareUnit.length} unité(s) affichée(s)`}
+        actions={
+          <>
+            <input type="date" value={weekStart} onChange={(e) => setWeekStart(getWeekStartFromDate(e.target.value))} className="field-control" />
+            <Link to="/optimization" className="btn btn-primary">
+              Génération auto
+            </Link>
+          </>
+        }
+      />
+
+      <section className="panel-card filters-card">
+        <div className="filter-row">
+          <select
+            value={selectedService}
+            onChange={(e) => {
+              setSelectedService(e.target.value)
+              setSelectedCareUnit('')
+            }}
+            className="field-control"
+          >
+            <option value="">Tous les services</option>
+            {services.map((service) => (
+              <option key={service.id} value={service.id}>
+                {service.name}
+              </option>
+            ))}
+          </select>
+
+          <select value={selectedCareUnit} onChange={(e) => setSelectedCareUnit(e.target.value)} className="field-control">
+            <option value="">Toutes les unités</option>
+            {availableCareUnits.map((careUnit) => (
+              <option key={careUnit.id} value={careUnit.id}>
+                {careUnit.name}
+              </option>
+            ))}
+          </select>
+        </div>
+      </section>
+
+      {absencesThisWeek.length > 0 && (
+        <section className="panel-card">
+          <h3>⚠️ Absences cette semaine ({absencesThisWeek.length})</h3>
+          <div className="absences-grid">
+            {weekDays.map((day) => {
+              const dateKey = toDateKey(day)
+              const dayAbsences = absencesByDate[dateKey] || []
+              if (dayAbsences.length === 0) return null
+              return (
+                <div key={dateKey} className="absence-day">
+                  <strong>{formatDate(day, { weekday: 'short', day: '2-digit', month: '2-digit' })}</strong>
+                  <ul className="absence-list">
+                    {dayAbsences.map((absence) => (
+                      <li key={absence.id} className="absence-item">
+                        <span className="absence-staff">{absence.staff_name}</span>
+                        <span className="absence-type" style={{ color: '#dc2626' }}>{absence.absence_type_name}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
+      <section className="planning-board">
+        <div className="planning-grid">
+          <div className="planning-cell planning-corner">Unité / jour</div>
+          {weekDays.map((day) => (
+            <div key={toDateKey(day)} className="planning-cell planning-head">
+              <strong>{formatDate(day, { weekday: 'long' })}</strong>
+              <span>{formatDate(day, { day: '2-digit', month: '2-digit' })}</span>
+            </div>
+          ))}
+
+          {groupedByCareUnit.length ? (
+            groupedByCareUnit.map((careUnit) => (
+              <FragmentLike
+                keyValue={careUnit.id}
+                content={
+                  <>
+                    <div className="planning-cell planning-label">{careUnit.name}</div>
+                    {weekDays.map((day) => {
+                      const dateKey = toDateKey(day)
+                      const dayShifts = careUnit.shiftsByDay[dateKey] || []
+
+                      return (
+                        <div key={`${careUnit.id}-${dateKey}`} className="planning-cell planning-day">
+                          {dayShifts.length ? (
+                            dayShifts.map((shift) => {
+                              const shiftAssignments = assignmentsByShift[shift.id] || []
+                              const typeName = shift.shift_type_name || shiftTypesById[shift.shift_type] || 'Poste'
+                              return (
+                                <article key={shift.id} className="shift-card" style={{ '--shift-accent': getShiftTypeColor(typeName) }}>
+                                  <div className="shift-card-top">
+                                    <strong>{typeName}</strong>
+                                    <span>
+                                      {shiftAssignments.length}/{shift.max_staff}
+                                    </span>
+                                  </div>
+                                  <p className="shift-meta">
+                                    {formatDateTime(shift.start_datetime).slice(11, 16)} → {formatDateTime(shift.end_datetime).slice(11, 16)}
+                                  </p>
+                                  <div className="chip-list">
+                                    {shiftAssignments.length ? (
+                                      shiftAssignments.map((assignment) => (
+                                        <span key={assignment.id} className="staff-chip">
+                                          {assignment.staff_name || staffMap[assignment.staff] || 'Inconnu'}
+                                        </span>
+                                      ))
+                                    ) : (
+                                      <span className="muted-text">Aucune affectation</span>
+                                    )}
+                                  </div>
+                                </article>
+                              )
+                            })
+                          ) : (
+                            <span className="muted-text">—</span>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </>
+                }
+              />
+            ))
+          ) : (
+            <div className="planning-empty">
+              <EmptyState
+                title="Aucun poste trouvé"
+                description="Ajustez les filtres ou lancez une génération automatique pour remplir cette semaine."
+              />
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function FragmentLike({ content }) {
+  return content
+}
+
+function StaffPage() {
+  const [staff, setStaff] = useState([])
+  const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     const fetchStaff = async () => {
       try {
         const response = await api.get(endpoints.staff)
-        setStaff(response.data.results || response.data)
+        setStaff(normalizeListResponse(response.data))
       } catch (error) {
-        console.error('Error fetching staff:', error)
+        console.error('Staff loading error:', error)
       } finally {
         setLoading(false)
       }
     }
+
     fetchStaff()
   }, [])
 
-  if (loading) return <div className="loading">Chargement...</div>
+  const rows = useMemo(() => {
+    return staff.filter((person) => {
+      const haystack = `${person.first_name ?? ''} ${person.last_name ?? ''} ${person.email ?? ''}`.toLowerCase()
+      return haystack.includes(search.toLowerCase())
+    })
+  }, [search, staff])
+
+  if (loading) return <LoadingState label="Chargement du personnel..." />
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <h1>👥 Gestion du Personnel</h1>
-        <button className="btn btn-primary">➕ Nouveau</button>
-      </div>
-      <div className="table-container">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Nom</th>
-              <th>Prénom</th>
-              <th>Email</th>
-              <th>Rôles</th>
-              <th>Statut</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {staff.map(person => (
-              <tr key={person.id}>
-                <td>{person.last_name}</td>
-                <td>{person.first_name}</td>
-                <td>{person.email}</td>
-                <td>{person.roles?.join(', ') || '-'}</td>
-                <td>
-                  <span className={`badge ${person.is_active ? 'badge-success' : 'badge-danger'}`}>
-                    {person.is_active ? 'Actif' : 'Inactif'}
-                  </span>
-                </td>
-                <td>
-                  <button className="btn btn-sm">👁️</button>
-                  <button className="btn btn-sm">✏️</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="page-stack">
+      <PageHeader
+        title="Personnel"
+        subtitle="Ressources humaines"
+        badge={`${rows.length} résultat(s)`}
+        actions={<input className="field-control" placeholder="Rechercher un agent..." value={search} onChange={(e) => setSearch(e.target.value)} />}
+      />
+
+      <DataTable
+        keyField="id"
+        rows={rows}
+        emptyTitle="Aucun membre du personnel"
+        emptyDescription="La recherche ne correspond à aucun agent."
+        columns={[
+          { key: 'employee_id', label: 'Matricule' },
+          { key: 'last_name', label: 'Nom', render: (row) => row.last_name?.toUpperCase() || '—' },
+          { key: 'first_name', label: 'Prénom' },
+          { key: 'email', label: 'Email', render: (row) => row.email || '—' },
+          {
+            key: 'roles',
+            label: 'Rôles',
+            render: (row) =>
+              row.roles?.length ? (
+                <div className="inline-badges">
+                  {row.roles.map((role, index) => (
+                    <span key={`${role}-${index}`} className="soft-badge">
+                      {role}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                '—'
+              ),
+          },
+          {
+            key: 'is_active',
+            label: 'Statut',
+            render: (row) => (
+              <StatusBadge variant={row.is_active ? 'success' : 'danger'}>
+                {row.is_active ? 'Actif' : 'Inactif'}
+              </StatusBadge>
+            ),
+          },
+        ]}
+      />
     </div>
   )
 }
 
-function ShiftsList() {
+function ShiftsPage() {
   const [shifts, setShifts] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -175,251 +778,358 @@ function ShiftsList() {
     const fetchShifts = async () => {
       try {
         const response = await api.get(endpoints.shifts)
-        setShifts(response.data.results || response.data)
+        setShifts(normalizeListResponse(response.data))
       } catch (error) {
-        console.error('Error fetching shifts:', error)
+        console.error('Shifts loading error:', error)
       } finally {
         setLoading(false)
       }
     }
+
     fetchShifts()
   }, [])
 
-  if (loading) return <div className="loading">Chargement...</div>
+  if (loading) return <LoadingState label="Chargement des postes..." />
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <h1>📅 Gestion des Postes</h1>
-        <button className="btn btn-primary">➕ Nouveau poste</button>
-      </div>
-      <div className="table-container">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Service</th>
-              <th>Unité</th>
-              <th>Type</th>
-              <th>Début</th>
-              <th>Fin</th>
-              <th>Effectif</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shifts.map(shift => (
-              <tr key={shift.id}>
-                <td>{shift.service_name || '-'}</td>
-                <td>{shift.care_unit_name || '-'}</td>
-                <td>{shift.shift_type_name || '-'}</td>
-                <td>{new Date(shift.start_datetime).toLocaleString('fr-FR')}</td>
-                <td>{new Date(shift.end_datetime).toLocaleString('fr-FR')}</td>
-                <td>{shift.assigned_count || 0}/{shift.max_staff}</td>
-                <td>
-                  <button className="btn btn-sm">👁️</button>
-                  <button className="btn btn-sm">✏️</button>
-                  <button className="btn btn-sm btn-danger">🗑️</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="page-stack">
+      <PageHeader title="Postes" subtitle="Catalogue des vacations" badge={`${shifts.length} poste(s)`} />
+
+      <DataTable
+        keyField="id"
+        rows={shifts}
+        emptyTitle="Aucun poste disponible"
+        emptyDescription="Aucun poste n'est actuellement enregistré."
+        columns={[
+          { key: 'service_name', label: 'Service', render: (row) => row.service_name || '—' },
+          { key: 'care_unit_name', label: 'Unité', render: (row) => row.care_unit_name || '—' },
+          {
+            key: 'shift_type_name',
+            label: 'Type',
+            render: (row) => (
+              <span className="type-pill" style={{ '--type-color': getShiftTypeColor(row.shift_type_name) }}>
+                {row.shift_type_name || '—'}
+              </span>
+            ),
+          },
+          { key: 'start_datetime', label: 'Début', render: (row) => formatDateTime(row.start_datetime) },
+          { key: 'end_datetime', label: 'Fin', render: (row) => formatDateTime(row.end_datetime) },
+          {
+            key: 'assigned_count',
+            label: 'Couverture',
+            render: (row) => (
+              <StatusBadge variant={(row.assigned_count || 0) >= (row.min_staff || 0) ? 'success' : 'warning'}>
+                {(row.assigned_count || 0)}/{row.max_staff}
+              </StatusBadge>
+            ),
+          },
+        ]}
+      />
     </div>
   )
 }
 
-function PlanningView() {
-  const [assignments, setAssignments] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const fetchAssignments = async () => {
-      try {
-        const response = await api.get(endpoints.assignments)
-        setAssignments(response.data.results || response.data)
-      } catch (error) {
-        console.error('Error fetching assignments:', error)
-      } finally {
-        setLoading(false)
-      }
-    }
-    fetchAssignments()
-  }, [])
-
-  if (loading) return <div className="loading">Chargement...</div>
-
-  return (
-    <div className="page">
-      <div className="page-header">
-        <h1>📋 Planning des Affectations</h1>
-        <button className="btn btn-primary">➕ Nouvelle affectation</button>
-      </div>
-      <div className="table-container">
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Personnel</th>
-              <th>Poste</th>
-              <th>Service</th>
-              <th>Date</th>
-              <th>Statut</th>
-              <th>Source</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {assignments.map(assignment => (
-              <tr key={assignment.id}>
-                <td>{assignment.staff_name || '-'}</td>
-                <td>{assignment.shift_label || '-'}</td>
-                <td>{assignment.service_name || '-'}</td>
-                <td>{assignment.start_datetime ? new Date(assignment.start_datetime).toLocaleString('fr-FR') : '-'}</td>
-                <td>
-                  <span className={`badge ${
-                    assignment.status === 'confirmed' ? 'badge-success' :
-                    assignment.status === 'pending' ? 'badge-warning' : 'badge-danger'
-                  }`}>
-                    {assignment.status_display || assignment.status}
-                  </span>
-                </td>
-                <td>
-                  <span className="badge badge-info">
-                    {assignment.source_display || assignment.source}
-                  </span>
-                </td>
-                <td>
-                  <button className="btn btn-sm">👁️</button>
-                  <button className="btn btn-sm btn-danger">🗑️</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-function OptimizationView() {
+function OptimizationPage() {
   const [config, setConfig] = useState({
-    start_date: '',
-    end_date: '',
+    start_date: getWeekStartFromDate(),
+    end_date: toDateKey(new Date(new Date(getWeekStartFromDate()).getTime() + 6 * 24 * 60 * 60 * 1000)),
     service_id: '',
   })
-  const [generating, setGenerating] = useState(false)
+  const [services, setServices] = useState([])
   const [result, setResult] = useState(null)
+  const [generating, setGenerating] = useState(false)
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
+  useEffect(() => {
+    const fetchServices = async () => {
+      try {
+        const response = await api.get(endpoints.services)
+        setServices(normalizeListResponse(response.data))
+      } catch (error) {
+        console.error('Services loading error:', error)
+      }
+    }
+
+    fetchServices()
+  }, [])
+
+  const handleSubmit = async (event) => {
+    event.preventDefault()
     setGenerating(true)
+    setResult(null)
+
     try {
-      const response = await api.post(endpoints.generate, config)
+      const payload = {
+        start_date: config.start_date,
+        end_date: config.end_date,
+      }
+
+      if (config.service_id) {
+        payload.service_id = config.service_id
+      }
+
+      const response = await api.post(endpoints.generate, payload)
       setResult(response.data)
     } catch (error) {
-      console.error('Error generating planning:', error)
-      setResult({ error: error.message })
+      setResult({
+        status: 'error',
+        error: error.response?.data?.error || error.message || 'Erreur inconnue',
+      })
     } finally {
       setGenerating(false)
     }
   }
 
   return (
-    <div className="page">
-      <div className="page-header">
-        <h1>🤖 Génération Automatique</h1>
-      </div>
-      <div className="card">
-        <h2>Paramètres de génération</h2>
-        <form onSubmit={handleSubmit} className="form">
-          <div className="form-group">
-            <label>Date de début</label>
-            <input
-              type="date"
-              value={config.start_date}
-              onChange={(e) => setConfig({...config, start_date: e.target.value})}
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label>Date de fin</label>
-            <input
-              type="date"
-              value={config.end_date}
-              onChange={(e) => setConfig({...config, end_date: e.target.value})}
-              required
-            />
-          </div>
-          <div className="form-group">
-            <label>Service (optionnel)</label>
-            <input
-              type="text"
-              value={config.service_id}
-              onChange={(e) => setConfig({...config, service_id: e.target.value})}
-              placeholder="Laisser vide pour tous les services"
-            />
-          </div>
-          <button type="submit" className="btn btn-primary btn-lg" disabled={generating}>
-            {generating ? '⏳ Génération en cours...' : '🚀 Lancer la génération'}
-          </button>
-        </form>
-      </div>
-      {result && (
-        <div className="card">
-          <h2>Résultat</h2>
-          {result.error ? (
-            <div className="alert alert-danger">{result.error}</div>
+    <div className="page-stack">
+      <PageHeader title="Génération automatique" subtitle="Moteur d’optimisation" badge="Assistée" />
+
+      <section className="optimization-layout">
+        <div className="panel-card">
+          <h3>Paramètres de génération</h3>
+          <form className="form-grid" onSubmit={handleSubmit}>
+            <label>
+              <span>Date de début</span>
+              <input
+                type="date"
+                className="field-control"
+                value={config.start_date}
+                onChange={(e) => setConfig((current) => ({ ...current, start_date: e.target.value }))}
+                required
+              />
+            </label>
+
+            <label>
+              <span>Date de fin</span>
+              <input
+                type="date"
+                className="field-control"
+                value={config.end_date}
+                onChange={(e) => setConfig((current) => ({ ...current, end_date: e.target.value }))}
+                required
+              />
+            </label>
+
+            <label className="field-full">
+              <span>Service concerné</span>
+              <select
+                className="field-control"
+                value={config.service_id}
+                onChange={(e) => setConfig((current) => ({ ...current, service_id: e.target.value }))}
+              >
+                <option value="">Tous les services</option>
+                {services.map((service) => (
+                  <option key={service.id} value={service.id}>
+                    {service.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button type="submit" className="btn btn-primary" disabled={generating}>
+              {generating ? 'Génération en cours...' : 'Lancer la génération'}
+            </button>
+          </form>
+        </div>
+
+        <div className="panel-card">
+          <h3>Résultat</h3>
+          {result ? (
+            result.status === 'error' ? (
+              <div className="result-box danger">
+                <strong>Échec de la génération</strong>
+                <p>{result.error}</p>
+              </div>
+            ) : (
+              <div className="result-stats">
+                <div className="result-box success">
+                  <strong>Génération terminée</strong>
+                  <p>{result.message}</p>
+                </div>
+                <div className="mini-stats">
+                  <StatCard label="Affectations" value={result.total_assignments ?? 0} hint="Créées automatiquement" tone="green" />
+                  <StatCard label="Postes analysés" value={result.total_shifts ?? 0} hint="Dans la période choisie" tone="blue" />
+                  <StatCard label="Couverture" value={`${result.coverage_rate ?? 0}%`} hint="Taux de remplissage" tone="amber" />
+                  <StatCard label="Score" value={result.total_score ?? 0} hint="Équité / pénalités" tone="purple" />
+                </div>
+              </div>
+            )
           ) : (
-            <div className="alert alert-success">
-              <p>✅ Génération lancée avec succès !</p>
-              <p>ID de la génération : {result.run_id}</p>
-              <p>{result.message}</p>
-            </div>
+            <EmptyState
+              title="Aucun résultat pour le moment"
+              description="Configurez la période puis lancez l’organisation automatique du planning."
+            />
           )}
         </div>
-      )}
+      </section>
+
+      <section className="panel-card">
+        <h3>Règles prises en compte</h3>
+        <ul className="info-list">
+          <li>Vérification des absences et des restrictions contractuelles.</li>
+          <li>Recherche d’une meilleure répartition de la charge entre agents.</li>
+          <li>Prise en compte des nuits consécutives et de la couverture minimale.</li>
+        </ul>
+      </section>
     </div>
   )
 }
 
-function ConfigView() {
+function ConfigPage() {
+  const { isAuthenticated, isAdmin, login, user } = useAuth()
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [isLoggingIn, setIsLoggingIn] = useState(false)
+  const [loginError, setLoginError] = useState('')
+
+  const adminBaseUrl = '/admin'
+
+  const items = [
+    {
+      icon: '🏢',
+      title: 'Services',
+      href: `${adminBaseUrl}/core/service/`,
+      description: 'Créer et organiser les pôles hospitaliers pris en charge par le planning.',
+      action: 'Ouvrir la gestion des services',
+    },
+    {
+      icon: '🏥',
+      title: 'Unités de soin',
+      href: `${adminBaseUrl}/core/careunit/`,
+      description: 'Relier les unités à chaque service pour segmenter correctement les affectations.',
+      action: 'Ouvrir les unités de soin',
+    },
+    {
+      icon: '🕒',
+      title: 'Types de poste',
+      href: `${adminBaseUrl}/core/shifttype/`,
+      description: 'Définir les horaires jour, soir, nuit et les règles de repos associées.',
+      action: 'Configurer les types de poste',
+    },
+    {
+      icon: '📆',
+      title: "Types d'absence",
+      href: `${adminBaseUrl}/core/absencetype/`,
+      description: "Standardiser les motifs d'indisponibilité pris en compte par l'auto-planification.",
+      action: 'Configurer les absences',
+    },
+    {
+      icon: '📏',
+      title: 'Règles métier',
+      href: `${adminBaseUrl}/core/rule/`,
+      description: "Ajuster les contraintes comme les nuits consécutives ou d'autres paramètres métier.",
+      action: 'Gérer les règles métier',
+    },
+    {
+      icon: '🤖',
+      title: 'Configuration optimisation',
+      href: `${adminBaseUrl}/optimization/optimizationconfig/`,
+      description: 'Modifier les poids et paramètres utilisés par le moteur de génération automatique.',
+      action: 'Ouvrir la configuration IA',
+    },
+  ]
+
+  const handleLogin = async (e) => {
+    e.preventDefault()
+    setLoginError('')
+    setIsLoggingIn(true)
+
+    const result = await login(username, password)
+    setIsLoggingIn(false)
+
+    if (!result.success) {
+      setLoginError(result.error)
+    }
+  }
+
+  const isAdminUser = isAuthenticated && isAdmin
+
   return (
-    <div className="page">
-      <div className="page-header">
-        <h1>⚙️ Configuration</h1>
-      </div>
-      <div className="config-grid">
-        <div className="card">
-          <h3>🏢 Services</h3>
-          <p>Gérez les services hospitaliers</p>
-          <button className="btn">Accéder</button>
-        </div>
-        <div className="card">
-          <h3>🏥 Unités de soin</h3>
-          <p>Gérez les unités de soin</p>
-          <button className="btn">Accéder</button>
-        </div>
-        <div className="card">
-          <h3>⏰ Types de poste</h3>
-          <p>Configurez les types de poste (Jour, Nuit, etc.)</p>
-          <button className="btn">Accéder</button>
-        </div>
-        <div className="card">
-          <h3>📋 Types d'absence</h3>
-          <p>Configurez les types d'absence</p>
-          <button className="btn">Accéder</button>
-        </div>
-        <div className="card">
-          <h3>🎯 Règles métier</h3>
-          <p>Configurez les règles de planification</p>
-          <button className="btn">Accéder</button>
-        </div>
-        <div className="card">
-          <h3>🤖 Config optimisation</h3>
-          <p>Paramètres de génération automatique</p>
-          <button className="btn">Accéder</button>
-        </div>
-      </div>
+    <div className="page-stack">
+      <PageHeader
+        title="Configuration"
+        subtitle="Paramètres avancés"
+        badge={`${items.length} modules disponibles`}
+      />
+
+      {!isAuthenticated ? (
+        <section className="panel-card">
+          <h3>Connexion administrateur</h3>
+          <p className="section-text">
+            Cette application n'est pas l'interface d'administration Django elle-même. L'écran
+            configuration sert de passerelle vers l'espace admin du backend. Pour accéder aux modules
+            ci-dessous, connectez-vous avec un compte administrateur.
+          </p>
+
+          <form className="form-grid" onSubmit={handleLogin} style={{ maxWidth: '400px', marginTop: '20px' }}>
+            <label>
+              <span>Nom d'utilisateur</span>
+              <input
+                type="text"
+                className="field-control"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin"
+                required
+              />
+            </label>
+
+            <label>
+              <span>Mot de passe</span>
+              <input
+                type="password"
+                className="field-control"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                required
+              />
+            </label>
+
+            {loginError && (
+              <div className="result-box danger" style={{ gridColumn: '1 / -1' }}>
+                <p>{loginError}</p>
+              </div>
+            )}
+
+            <button type="submit" className="btn btn-primary" disabled={isLoggingIn}>
+              {isLoggingIn ? 'Connexion...' : "Se connecter en tant qu'admin"}
+            </button>
+          </form>
+        </section>
+      ) : isAdminUser ? (
+        <section className="panel-card">
+          <h3>Accès administrateur actif</h3>
+          <p className="section-text">
+            Vous êtes connecté en tant qu'administrateur. Vous pouvez accéder aux modules de configuration
+            ci-dessous. Les liens s'ouvriront dans un nouvel onglet vers l'interface d'administration Django.
+          </p>
+          <div style={{ marginTop: '16px', padding: '12px 16px', backgroundColor: '#f0fdf4', borderRadius: '8px', border: '1px solid #bbf7d0' }}>
+            <strong style={{ color: '#166534' }}>✓ Connecté en tant que {user.first_name ? `${user.first_name} ${user.last_name}` : user.username}</strong>
+          </div>
+        </section>
+      ) : (
+        <section className="panel-card">
+          <h3>Compte non administrateur</h3>
+          <p className="section-text">
+            Vous êtes connecté, mais votre compte n'a pas les privilèges d'administrateur nécessaires
+            pour accéder aux modules de configuration. Veuillez vous déconnecter et vous reconnecter
+            avec un compte administrateur.
+          </p>
+        </section>
+      )}
+
+      {isAdminUser && (
+        <section className="config-grid">
+          {items.map((item) => (
+            <a key={item.title} href={item.href} className="config-card" target="_blank" rel="noreferrer">
+              <span className="config-icon">{item.icon}</span>
+              <strong>{item.title}</strong>
+              <p>{item.description}</p>
+              <span className="config-link">{item.action} →</span>
+            </a>
+          ))}
+        </section>
+      )}
     </div>
   )
 }
@@ -427,19 +1137,16 @@ function ConfigView() {
 function App() {
   return (
     <BrowserRouter>
-      <div className="app">
-        <Navigation />
-        <main className="main-content">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/staff" element={<StaffList />} />
-            <Route path="/shifts" element={<ShiftsList />} />
-            <Route path="/planning" element={<PlanningView />} />
-            <Route path="/optimization" element={<OptimizationView />} />
-            <Route path="/config" element={<ConfigView />} />
-          </Routes>
-        </main>
-      </div>
+      <AppShell>
+        <Routes>
+          <Route path="/" element={<DashboardPage />} />
+          <Route path="/planning" element={<PlanningPage />} />
+          <Route path="/staff" element={<StaffPage />} />
+          <Route path="/shifts" element={<ShiftsPage />} />
+          <Route path="/optimization" element={<OptimizationPage />} />
+          <Route path="/config" element={<ConfigPage />} />
+        </Routes>
+      </AppShell>
     </BrowserRouter>
   )
 }
