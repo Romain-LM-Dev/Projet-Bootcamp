@@ -1,0 +1,25 @@
+# Scripts de démarrage locaux
+start_dev.bat
+start_backend.bat
+start_frontend.bat
+
+# Python / Django
+__pycache__/
+*.py[cod]
+*.pyo
+db.sqlite3
+*.log
+
+# Environnement
+backend/.env
+backend/venv/
+venv/
+.env
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/

@@ -18,6 +18,7 @@ export const endpoints = {
   authUser: '/auth/user/',
   staff: '/staff/',
   roles: '/roles/',
+  staffRoles: '/staff-roles/',
   specialties: '/specialties/',
   certifications: '/certifications/',
   contractTypes: '/contract-types/',

@@ -176,12 +176,12 @@ class GeneratePlanningView(views.APIView):
 
         for shift in shifts:
             total_shifts += 1
-            total_required_slots += max(shift.min_staff, 0)
+            total_required_slots += max(shift.max_staff, 0)
 
-            # Skip already sufficiently covered shifts
+            # Skip shifts already at maximum capacity
             current_shift_assignments = ShiftAssignment.objects.filter(shift=shift).count()
-            remaining_needed = max(shift.min_staff - current_shift_assignments, 0)
-            if remaining_needed == 0:
+            remaining_capacity = shift.max_staff - current_shift_assignments
+            if remaining_capacity <= 0:
                 continue
 
             # Get eligible staff for this shift
@@ -196,8 +196,8 @@ class GeneratePlanningView(views.APIView):
             # Sort by workload (least loaded first for equity)
             eligible_staff.sort(key=lambda s: workload.get(s.id, 0))
 
-            # Assign staff to shift
-            num_needed = remaining_needed
+            # Fill up to max_staff (optimal coverage)
+            num_needed = remaining_capacity
             assigned = 0
 
             for staff in eligible_staff:
@@ -221,6 +221,7 @@ class GeneratePlanningView(views.APIView):
                 penalty = self.calculate_penalty(staff, shift, config, assignments_by_staff)
                 total_score += penalty
 
+        # coverage_rate = part des slots optimaux (max_staff) effectivement couverts
         coverage_rate = (total_assignments / total_required_slots * 100) if total_required_slots > 0 else 0
 
         return {
@@ -266,16 +267,26 @@ class GeneratePlanningView(views.APIView):
                     if shift.shift_type.requires_rest_after and not contract.contract_type.night_shift_allowed:
                         continue
                     
-                    # Check weekly hours limit
+                    # Check weekly hours limit (using actual shift duration)
+                    week_start = shift_date - timedelta(days=shift_date.weekday())
+                    week_end   = week_start + timedelta(days=7)
                     weekly_assignments = [
-                        assignment for assignment in staff_assignments
-                        if shift_date - timedelta(days=shift_date.weekday())
-                        <= assignment.shift.start_datetime.date()
-                        < shift_date + timedelta(days=7 - shift_date.weekday())
+                        a for a in staff_assignments
+                        if week_start <= a.shift.start_datetime.date() < week_end
                     ]
-                    weekly_hours = len(weekly_assignments) * 8
+                    weekly_hours = sum(
+                        (a.shift.end_datetime - a.shift.start_datetime).seconds / 3600
+                        if a.shift.end_datetime > a.shift.start_datetime
+                        else ((a.shift.end_datetime - a.shift.start_datetime).seconds + 86400) / 3600
+                        for a in weekly_assignments
+                    )
+                    shift_hours = (
+                        (shift.end_datetime - shift.start_datetime).seconds / 3600
+                        if shift.end_datetime > shift.start_datetime
+                        else ((shift.end_datetime - shift.start_datetime).seconds + 86400) / 3600
+                    )
 
-                    if weekly_hours >= contract.contract_type.max_hours_per_week:
+                    if weekly_hours + shift_hours > contract.contract_type.max_hours_per_week:
                         continue
             except:
                 pass

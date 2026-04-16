@@ -2,9 +2,8 @@
 Commande pour peupler la base de données avec des données de test équilibrées
 """
 from django.core.management.base import BaseCommand
-from datetime import datetime, date, time, timedelta
+from datetime import date, time
 from django.contrib.auth.models import User
-import random
 
 # Import models
 from core.models import Service, CareUnit, ShiftType, AbsenceType, Rule
@@ -23,23 +22,31 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if options['clear']:
             self.stdout.write('Suppression des données existantes...')
+            from optimization.models import OptimizationResult, OptimizationRun, OptimizationConfig, OptimizationAlgorithm
+            from planning.models import PlanningSnapshot, Preference
+            OptimizationResult.objects.all().delete()
+            OptimizationRun.objects.all().delete()
+            OptimizationConfig.objects.all().delete()
+            OptimizationAlgorithm.objects.all().delete()
+            PlanningSnapshot.objects.all().delete()
+            Preference.objects.all().delete()
             Absence.objects.all().delete()
             ShiftAssignment.objects.all().delete()
             Shift.objects.all().delete()
+            StaffRole.objects.all().delete()
+            StaffSpecialty.objects.all().delete()
+            Contract.objects.all().delete()
             Staff.objects.all().delete()
-            Service.objects.all().delete()
             CareUnit.objects.all().delete()
+            Service.objects.all().delete()
             ShiftType.objects.all().delete()
             AbsenceType.objects.all().delete()
             Rule.objects.all().delete()
             Role.objects.all().delete()
             Specialty.objects.all().delete()
             ContractType.objects.all().delete()
-            Contract.objects.all().delete()
-            StaffRole.objects.all().delete()
-            StaffSpecialty.objects.all().delete()
             User.objects.filter(is_superuser=False).delete()
-            self.stdout.write(self.style.SUCCESS('Données supprimées avec succès'))
+            self.stdout.write(self.style.SUCCESS('Donnees supprimees avec succes'))
 
         # Créer superutilisateur admin
         if not User.objects.filter(username='admin').exists():
@@ -60,7 +67,7 @@ class Command(BaseCommand):
                 'description': 'Configuration standard pour la génération automatique de planning',
             }
         )
-        self.stdout.write(self.style.SUCCESS('  ✓ Configuration d\'optimisation créée'))
+        self.stdout.write(self.style.SUCCESS('  OK Configuration d\'optimisation créée'))
 
         # 1. Types de poste (3)
         self.stdout.write('Création des types de poste...')
@@ -152,118 +159,58 @@ class Command(BaseCommand):
             ct, _ = ContractType.objects.get_or_create(code=ct_data['code'], defaults=ct_data)
             contract_types[ct.code] = ct
 
-        # 9. Personnel (8)
-        self.stdout.write('Création du personnel...')
+        # 9. Personnel (22 agents)
+        # Dimensionnement : 22 agents x ~35h/semaine = ~96 slots theoriques.
+        # Apres absences (~10 slots perdus) : ~86 slots disponibles.
+        # Besoin couverture complete (2/2) sur 32 postes : 60 affectations -> confortable.
+        self.stdout.write('Creation du personnel...')
+        spec_list = list(specialties.values())
+        ct_list   = list(contract_types.values())
         staff_members = []
-        for first_name, last_name, role_code in [
-            ('Marie', 'Dupont', 'IDE'), ('Pierre', 'Martin', 'IDE'),
-            ('Sophie', 'Bernard', 'AS'), ('Thomas', 'Petit', 'MED'),
-            ('Julie', 'Robert', 'IDE'), ('Nicolas', 'Richard', 'AS'),
-            ('Camille', 'Durand', 'IDE'), ('Julien', 'Dubois', 'MED'),
-        ]:
+        for idx, (first_name, last_name, role_code) in enumerate([
+            ('Marie',    'Dupont',    'IDE'), ('Pierre',   'Martin',    'IDE'),
+            ('Sophie',   'Bernard',   'AS'),  ('Thomas',   'Petit',     'MED'),
+            ('Julie',    'Robert',    'IDE'), ('Nicolas',  'Richard',   'AS'),
+            ('Camille',  'Durand',    'IDE'), ('Julien',   'Dubois',    'MED'),
+            ('Laura',    'Moreau',    'IDE'), ('Kevin',    'Simon',     'AS'),
+            ('Isabelle', 'Laurent',   'IDE'), ('Antoine',  'Lefevre',   'AS'),
+            ('Emma',     'Blanc',     'IDE'), ('Lucas',    'Rousseau',  'AS'),
+            ('Manon',    'Garnier',   'IDE'), ('Hugo',     'Faure',     'MED'),
+            ('Celine',   'Bonnet',    'AS'),  ('Romain',   'Lambert',   'IDE'),
+            ('Lea',      'Marchand',  'AS'),  ('Theo',     'Renard',    'IDE'),
+            ('Clara',    'Fontaine',  'AS'),  ('Paul',     'Legrand',   'IDE'),
+        ]):
             email = f"{first_name.lower()}.{last_name.lower()}@hopital.fr"
             staff, _ = Staff.objects.get_or_create(
                 email=email,
                 defaults={
                     'first_name': first_name, 'last_name': last_name,
-                    'employee_id': f"EMP{len(staff_members)+1:03d}",
+                    'employee_id': f"EMP{idx+1:03d}",
                     'is_active': True, 'hire_date': date(2022, 1, 1)
                 }
             )
             staff_members.append(staff)
-            role = roles[role_code]
-            StaffRole.objects.get_or_create(staff=staff, role=role)
+            StaffRole.objects.get_or_create(staff=staff, role=roles[role_code])
 
-            # Ajouter une spécialité
-            spec = random.choice(list(specialties.values()))
+            # Specialite et contrat deterministes (rotation cyclique)
+            spec = spec_list[idx % len(spec_list)]
             StaffSpecialty.objects.get_or_create(staff=staff, specialty=spec, defaults={'level': 2})
 
-            # Ajouter un contrat
-            ct = random.choice(list(contract_types.values()))
+            ct = ct_list[idx % len(ct_list)]
             Contract.objects.get_or_create(
                 staff=staff, contract_type=ct,
                 defaults={'start_date': date(2024, 1, 1), 'workload_percent': 100, 'is_current': True}
             )
-            self.stdout.write(f'  ✓ {first_name} {last_name} ({role_code})')
+            self.stdout.write(f'  OK {first_name} {last_name} ({role_code})')
 
-        # 10. Postes pour 7 jours (semaine complète)
-        self.stdout.write('Création des postes...')
-        today = date.today()
-        start_of_week = today - timedelta(days=today.weekday())  # Lundi de la semaine courante
-        shifts_created = 0
-
-        for day_offset in range(7):  # Lundi à Dimanche
-            current_date = start_of_week + timedelta(days=day_offset)
-
-            for care_unit in CareUnit.objects.all():
-                # Jour: 07:00-15:00
-                Shift.objects.get_or_create(
-                    care_unit=care_unit, shift_type=shift_types['J'],
-                    start_datetime=datetime.combine(current_date, time(7, 0)),
-                    defaults={
-                        'end_datetime': datetime.combine(current_date, time(15, 0)),
-                        'min_staff': 2, 'max_staff': 4, 'is_active': True
-                    }
-                )
-                shifts_created += 1
-
-                # Soir: 15:00-23:00
-                Shift.objects.get_or_create(
-                    care_unit=care_unit, shift_type=shift_types['S'],
-                    start_datetime=datetime.combine(current_date, time(15, 0)),
-                    defaults={
-                        'end_datetime': datetime.combine(current_date, time(23, 0)),
-                        'min_staff': 1, 'max_staff': 3, 'is_active': True
-                    }
-                )
-                shifts_created += 1
-
-        self.stdout.write(f'  ✓ {shifts_created} postes créés pour la semaine')
-
-        # 11. Affectations (2 par poste)
-        self.stdout.write('Création des affectations...')
-        assignments_created = 0
-        active_staff = [s for s in staff_members if s.is_active]
-
-        for shift in Shift.objects.all():
-            # Assigner 1 à 2 personnes par poste
-            num_assignments = random.randint(1, min(2, len(active_staff)))
-            assigned_staff = random.sample(active_staff, num_assignments)
-
-            for staff in assigned_staff:
-                if not ShiftAssignment.objects.filter(staff=staff, shift=shift).exists():
-                    ShiftAssignment.objects.create(
-                        staff=staff, shift=shift, status='confirmed', source='manual'
-                    )
-                    assignments_created += 1
-
-        self.stdout.write(f'  ✓ {assignments_created} affectations créées')
-
-        # 12. Quelques absences (3)
-        self.stdout.write('Création des absences...')
-        for i, staff in enumerate(random.sample(active_staff, min(3, len(active_staff)))):
-            absence_type = random.choice([absence_types['CP'], absence_types['MAL'], absence_types['RTT']])
-            start = today + timedelta(days=random.randint(1, 14))
-            duration = random.randint(1, 3)
-
-            Absence.objects.get_or_create(
-                staff=staff, absence_type=absence_type, start_date=start,
-                defaults={
-                    'expected_end_date': start + timedelta(days=duration),
-                    'is_planned': absence_type.code != 'MAL'
-                }
-            )
-
-        self.stdout.write(f'  ✓ {Absence.objects.count()} absences créées')
+        # Les postes et affectations sont créés par setup_test_week
+        # seed_data ne gère que les données de référence (personnel, services, etc.)
 
         # Résumé
-        self.stdout.write(self.style.SUCCESS('\n✅ Base de données prête !'))
-        self.stdout.write(f'''
-Récapitulatif :
-- {Service.objects.count()} services
-- {CareUnit.objects.count()} unités de soin
-- {Staff.objects.count()} membres du personnel
-- {Shift.objects.count()} postes (semaine complète)
-- {ShiftAssignment.objects.count()} affectations
-- {Absence.objects.count()} absences
-        ''')
+        self.stdout.write(self.style.SUCCESS('\n[OK] Base de donnees prete !'))
+        self.stdout.write(
+            f'  {Service.objects.count()} services | '
+            f'{CareUnit.objects.count()} unites de soin | '
+            f'{Staff.objects.count()} membres du personnel'
+        )
+        self.stdout.write('  Postes : aucun — lancez ensuite : python manage.py setup_test_week')

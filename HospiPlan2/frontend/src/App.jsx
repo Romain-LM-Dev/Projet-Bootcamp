@@ -691,25 +691,93 @@ function FragmentLike({ content }) {
   return content
 }
 
+const EMPTY_FORM = {
+  first_name: '', last_name: '', email: '', employee_id: '', phone: '',
+  role_id: '', contract_type_id: '', hire_date: toDateKey(new Date()),
+}
+
 function StaffPage() {
   const [staff, setStaff] = useState([])
+  const [roles, setRoles] = useState([])
+  const [contractTypes, setContractTypes] = useState([])
   const [search, setSearch] = useState('')
   const [loading, setLoading] = useState(true)
+  const [showModal, setShowModal] = useState(false)
+  const [form, setForm] = useState(EMPTY_FORM)
+  const [formError, setFormError] = useState('')
+  const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
-    const fetchStaff = async () => {
-      try {
-        const response = await api.get(endpoints.staff)
-        setStaff(normalizeListResponse(response.data))
-      } catch (error) {
-        console.error('Staff loading error:', error)
-      } finally {
-        setLoading(false)
-      }
+  const fetchStaff = async () => {
+    try {
+      const [staffRes, rolesRes, ctRes] = await Promise.all([
+        api.get(endpoints.staff),
+        api.get(endpoints.roles),
+        api.get(endpoints.contractTypes),
+      ])
+      setStaff(normalizeListResponse(staffRes.data))
+      setRoles(normalizeListResponse(rolesRes.data))
+      setContractTypes(normalizeListResponse(ctRes.data))
+    } catch (error) {
+      console.error('Staff loading error:', error)
+    } finally {
+      setLoading(false)
     }
+  }
 
-    fetchStaff()
-  }, [])
+  useEffect(() => { fetchStaff() }, [])
+
+  const openModal = () => { setForm(EMPTY_FORM); setFormError(''); setShowModal(true) }
+  const closeModal = () => { setShowModal(false); setFormError('') }
+
+  const handleField = (e) => setForm((f) => ({ ...f, [e.target.name]: e.target.value }))
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setFormError('')
+    setSaving(true)
+    try {
+      // 1. Créer l'agent
+      const payload = {
+        first_name: form.first_name,
+        last_name: form.last_name,
+        email: form.email,
+        is_active: true,
+        hire_date: form.hire_date || toDateKey(new Date()),
+      }
+      if (form.employee_id) payload.employee_id = form.employee_id
+      if (form.phone) payload.phone = form.phone
+
+      const res = await api.post(endpoints.staff, payload)
+      const newStaffId = res.data.id
+
+      // 2. Associer le rôle
+      if (form.role_id && newStaffId) {
+        await api.post(endpoints.staffRoles, { staff: newStaffId, role: Number(form.role_id) })
+      }
+
+      // 3. Créer le contrat (nécessaire pour la planification automatique)
+      if (form.contract_type_id && newStaffId) {
+        await api.post(endpoints.contracts, {
+          staff: newStaffId,
+          contract_type: Number(form.contract_type_id),
+          start_date: form.hire_date || toDateKey(new Date()),
+          workload_percent: 100,
+          is_current: true,
+        })
+      }
+
+      await fetchStaff()
+      closeModal()
+    } catch (error) {
+      const data = error.response?.data
+      if (data?.email) setFormError(`Email : ${data.email[0]}`)
+      else if (data?.employee_id) setFormError(`Matricule : ${data.employee_id[0]}`)
+      else if (data?.detail) setFormError(data.detail)
+      else setFormError("Erreur lors de la création de l'agent.")
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const rows = useMemo(() => {
     return staff.filter((person) => {
@@ -726,7 +794,12 @@ function StaffPage() {
         title="Personnel"
         subtitle="Ressources humaines"
         badge={`${rows.length} résultat(s)`}
-        actions={<input className="field-control" placeholder="Rechercher un agent..." value={search} onChange={(e) => setSearch(e.target.value)} />}
+        actions={
+          <>
+            <input className="field-control" placeholder="Rechercher un agent..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            <button className="btn btn-primary" onClick={openModal}>+ Nouvel agent</button>
+          </>
+        }
       />
 
       <DataTable
@@ -735,7 +808,7 @@ function StaffPage() {
         emptyTitle="Aucun membre du personnel"
         emptyDescription="La recherche ne correspond à aucun agent."
         columns={[
-          { key: 'employee_id', label: 'Matricule' },
+          { key: 'employee_id', label: 'Matricule', render: (row) => row.employee_id || '—' },
           { key: 'last_name', label: 'Nom', render: (row) => row.last_name?.toUpperCase() || '—' },
           { key: 'first_name', label: 'Prénom' },
           { key: 'email', label: 'Email', render: (row) => row.email || '—' },
@@ -746,14 +819,10 @@ function StaffPage() {
               row.roles?.length ? (
                 <div className="inline-badges">
                   {row.roles.map((role, index) => (
-                    <span key={`${role}-${index}`} className="soft-badge">
-                      {role}
-                    </span>
+                    <span key={`${role}-${index}`} className="soft-badge">{role}</span>
                   ))}
                 </div>
-              ) : (
-                '—'
-              ),
+              ) : '—',
           },
           {
             key: 'is_active',
@@ -766,6 +835,90 @@ function StaffPage() {
           },
         ]}
       />
+
+      {showModal && (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="modal-box">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Ressources humaines</p>
+                <h3>Ajouter un agent</h3>
+              </div>
+              <button className="modal-close" onClick={closeModal}>✕</button>
+            </div>
+
+            <form onSubmit={handleSubmit}>
+              <div className="modal-body">
+                <div className="form-grid">
+                  <label>
+                    <span>Prénom <span style={{ color: '#dc2626' }}>*</span></span>
+                    <input name="first_name" className="field-control" value={form.first_name} onChange={handleField} required placeholder="Marie" />
+                  </label>
+                  <label>
+                    <span>Nom <span style={{ color: '#dc2626' }}>*</span></span>
+                    <input name="last_name" className="field-control" value={form.last_name} onChange={handleField} required placeholder="Dupont" />
+                  </label>
+                  <label className="field-full">
+                    <span>Email <span style={{ color: '#dc2626' }}>*</span></span>
+                    <input name="email" type="email" className="field-control" value={form.email} onChange={handleField} required placeholder="marie.dupont@hopital.fr" />
+                  </label>
+                  <label>
+                    <span>Matricule</span>
+                    <input name="employee_id" className="field-control" value={form.employee_id} onChange={handleField} placeholder="EMP013" />
+                  </label>
+                  <label>
+                    <span>Téléphone</span>
+                    <input name="phone" className="field-control" value={form.phone} onChange={handleField} placeholder="06 00 00 00 00" />
+                  </label>
+                  <label>
+                    <span>Date d'embauche</span>
+                    <input name="hire_date" type="date" className="field-control" value={form.hire_date} onChange={handleField} />
+                  </label>
+                  <label>
+                    <span>Rôle</span>
+                    <select name="role_id" className="field-control" value={form.role_id} onChange={handleField}>
+                      <option value="">— Sélectionner —</option>
+                      {roles.map((r) => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field-full">
+                    <span>Type de contrat <span style={{ color: '#dc2626' }}>*</span></span>
+                    <select name="contract_type_id" className="field-control" value={form.contract_type_id} onChange={handleField} required>
+                      <option value="">— Sélectionner un contrat —</option>
+                      {contractTypes.map((ct) => (
+                        <option key={ct.id} value={ct.id}>
+                          {ct.name} — {ct.max_hours_per_week}h/sem
+                          {ct.night_shift_allowed ? '' : ' (pas de nuit)'}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <div className="field-full" style={{ fontSize: '0.8rem', color: '#64748b', padding: '8px 0' }}>
+                    Le contrat est requis pour la planification automatique. Les certifications et spécialités
+                    peuvent être ajoutées depuis l'interface d'administration (écran Configuration).
+                  </div>
+
+                  {formError && (
+                    <div className="result-box danger" style={{ gridColumn: '1 / -1' }}>
+                      <p>{formError}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="modal-footer" style={{ justifyContent: 'space-between' }}>
+                <button type="button" className="btn btn-secondary" onClick={closeModal}>Annuler</button>
+                <button type="submit" className="btn btn-primary" disabled={saving}>
+                  {saving ? 'Enregistrement...' : 'Créer l\'agent'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -773,21 +926,82 @@ function StaffPage() {
 function ShiftsPage() {
   const [shifts, setShifts] = useState([])
   const [loading, setLoading] = useState(true)
+  const [modalShift, setModalShift] = useState(null)
+  const [modalAssignments, setModalAssignments] = useState([])
+  const [allStaff, setAllStaff] = useState([])
+  const [selectedStaffId, setSelectedStaffId] = useState('')
+  const [modalLoading, setModalLoading] = useState(false)
+  const [modalError, setModalError] = useState('')
 
-  useEffect(() => {
-    const fetchShifts = async () => {
-      try {
-        const response = await api.get(endpoints.shifts)
-        setShifts(normalizeListResponse(response.data))
-      } catch (error) {
-        console.error('Shifts loading error:', error)
-      } finally {
-        setLoading(false)
-      }
+  const fetchShifts = async () => {
+    try {
+      const response = await api.get(endpoints.shifts)
+      setShifts(normalizeListResponse(response.data))
+    } catch (error) {
+      console.error('Shifts loading error:', error)
+    } finally {
+      setLoading(false)
     }
+  }
 
-    fetchShifts()
-  }, [])
+  useEffect(() => { fetchShifts() }, [])
+
+  const openModal = async (shift) => {
+    setModalShift(shift)
+    setModalError('')
+    setSelectedStaffId('')
+    setModalLoading(true)
+    try {
+      const [assignRes, staffRes] = await Promise.all([
+        api.get(`${endpoints.assignments}?shift=${shift.id}`),
+        api.get(endpoints.staff),
+      ])
+      setModalAssignments(normalizeListResponse(assignRes.data))
+      setAllStaff(normalizeListResponse(staffRes.data))
+    } catch (error) {
+      console.error('Modal loading error:', error)
+    } finally {
+      setModalLoading(false)
+    }
+  }
+
+  const closeModal = () => {
+    setModalShift(null)
+    setModalAssignments([])
+    setSelectedStaffId('')
+    setModalError('')
+  }
+
+  const handleAdd = async () => {
+    if (!selectedStaffId) return
+    setModalError('')
+    try {
+      await api.post(endpoints.assignments, { staff: Number(selectedStaffId), shift: modalShift.id })
+      const res = await api.get(`${endpoints.assignments}?shift=${modalShift.id}`)
+      setModalAssignments(normalizeListResponse(res.data))
+      setSelectedStaffId('')
+      fetchShifts()
+    } catch (error) {
+      const msg = error.response?.data?.non_field_errors?.[0]
+        || error.response?.data?.detail
+        || 'Erreur lors de l\'affectation.'
+      setModalError(msg)
+    }
+  }
+
+  const handleRemove = async (assignmentId) => {
+    setModalError('')
+    try {
+      await api.delete(`${endpoints.assignments}${assignmentId}/`)
+      setModalAssignments((prev) => prev.filter((a) => a.id !== assignmentId))
+      fetchShifts()
+    } catch (error) {
+      setModalError('Erreur lors de la suppression.')
+    }
+  }
+
+  const assignedStaffIds = new Set(modalAssignments.map((a) => a.staff))
+  const availableStaff = allStaff.filter((s) => !assignedStaffIds.has(s.id))
 
   if (loading) return <LoadingState label="Chargement des postes..." />
 
@@ -823,8 +1037,107 @@ function ShiftsPage() {
               </StatusBadge>
             ),
           },
+          {
+            key: 'actions',
+            label: '',
+            render: (row) => (
+              <button className="btn btn-sm btn-secondary" onClick={() => openModal(row)}>
+                Affecter
+              </button>
+            ),
+          },
         ]}
       />
+
+      {modalShift && (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && closeModal()}>
+          <div className="modal-box">
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">{modalShift.service_name} — {modalShift.care_unit_name}</p>
+                <h3>
+                  <span className="type-pill" style={{ '--type-color': getShiftTypeColor(modalShift.shift_type_name) }}>
+                    {modalShift.shift_type_name}
+                  </span>{' '}
+                  {formatDateTime(modalShift.start_datetime).slice(0, 10)}
+                  {' · '}
+                  {formatDateTime(modalShift.start_datetime).slice(11, 16)} → {formatDateTime(modalShift.end_datetime).slice(11, 16)}
+                </h3>
+              </div>
+              <button className="modal-close" onClick={closeModal}>✕</button>
+            </div>
+
+            <div className="modal-body">
+              {modalLoading ? (
+                <LoadingState label="Chargement..." />
+              ) : (
+                <>
+                  <div className="modal-section">
+                    <p className="modal-section-title">
+                      Personnel affecté ({modalAssignments.length}/{modalShift.max_staff})
+                    </p>
+                    {modalAssignments.length ? (
+                      <ul className="assignment-list">
+                        {modalAssignments.map((a) => (
+                          <li key={a.id} className="assignment-item">
+                            <span>{a.staff_name || '—'}</span>
+                            <button
+                              className="btn btn-sm btn-danger"
+                              onClick={() => handleRemove(a.id)}
+                            >
+                              Retirer
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="muted-text">Aucun agent affecté pour le moment.</p>
+                    )}
+                  </div>
+
+                  {modalAssignments.length < modalShift.max_staff && (
+                    <div className="modal-section">
+                      <p className="modal-section-title">Ajouter un agent</p>
+                      <div className="modal-add-row">
+                        <select
+                          className="field-control"
+                          value={selectedStaffId}
+                          onChange={(e) => setSelectedStaffId(e.target.value)}
+                        >
+                          <option value="">— Sélectionner un agent —</option>
+                          {availableStaff.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.last_name?.toUpperCase()} {s.first_name}
+                              {s.roles?.length ? ` (${s.roles[0]})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          className="btn btn-primary"
+                          onClick={handleAdd}
+                          disabled={!selectedStaffId}
+                        >
+                          Ajouter
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {modalError && (
+                    <div className="result-box danger" style={{ marginTop: '12px' }}>
+                      <p>{modalError}</p>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="modal-footer">
+              <button className="btn btn-secondary" onClick={closeModal}>Fermer</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

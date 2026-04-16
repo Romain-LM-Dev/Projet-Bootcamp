@@ -49,8 +49,15 @@ class ShiftAssignmentCreateSerializer(serializers.Serializer):
         try:
             staff = Staff.objects.get(pk=attrs['staff'])
             shift = Shift.objects.get(pk=attrs['shift'])
-        except (Staff.DoesNotExist, Shift.DoesNotExist) as e:
-            raise serializers.ValidationError(str(e))
+        except Staff.DoesNotExist:
+            raise serializers.ValidationError({'staff': 'Membre du personnel introuvable.'})
+        except Shift.DoesNotExist:
+            raise serializers.ValidationError({'shift': 'Poste introuvable.'})
+
+        if ShiftAssignment.objects.filter(staff=staff, shift=shift).exists():
+            raise serializers.ValidationError(
+                f'{staff.full_name} est déjà affecté(e) à ce poste.'
+            )
 
         attrs['staff_obj'] = staff
         attrs['shift_obj'] = shift

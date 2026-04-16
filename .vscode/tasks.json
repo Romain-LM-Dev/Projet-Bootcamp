@@ -1,0 +1,53 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "HospiPlan2 - Backend",
+      "type": "shell",
+      "command": "${workspaceFolder}/HospiPlan2/start_backend.bat",
+      "windows": {
+        "command": "${workspaceFolder}\\HospiPlan2\\start_backend.bat"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "hospiplan2",
+        "label": "Backend (Django)"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "HospiPlan2 - Frontend",
+      "type": "shell",
+      "command": "${workspaceFolder}/HospiPlan2/start_frontend.bat",
+      "windows": {
+        "command": "${workspaceFolder}\\HospiPlan2\\start_frontend.bat"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "group": "hospiplan2",
+        "label": "Frontend (Vite)"
+      },
+      "isBackground": true,
+      "problemMatcher": []
+    },
+    {
+      "label": "HospiPlan2 - Start",
+      "dependsOn": [
+        "HospiPlan2 - Backend",
+        "HospiPlan2 - Frontend"
+      ],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "always"
+      },
+      "problemMatcher": []
+    }
+  ]
+}

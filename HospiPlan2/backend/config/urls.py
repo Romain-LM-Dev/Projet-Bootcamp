@@ -7,7 +7,7 @@ from rest_framework.routers import DefaultRouter
 
 # Import viewsets
 from core.views import RuleViewSet, ServiceViewSet, CareUnitViewSet, ShiftTypeViewSet, AbsenceTypeViewSet
-from staff.views import StaffViewSet, RoleViewSet, SpecialtyViewSet, CertificationViewSet, ContractTypeViewSet, ContractViewSet
+from staff.views import StaffViewSet, RoleViewSet, SpecialtyViewSet, CertificationViewSet, ContractTypeViewSet, ContractViewSet, StaffRoleViewSet
 from shifts.views import ShiftViewSet, ShiftTemplateViewSet
 from planning.views import AbsenceViewSet, PreferenceViewSet, ShiftAssignmentViewSet, PlanningSnapshotViewSet
 from optimization.views import OptimizationAlgorithmViewSet, OptimizationConfigViewSet, OptimizationRunViewSet, OptimizationResultViewSet, GeneratePlanningView
@@ -26,6 +26,7 @@ router.register(r'absence-types', AbsenceTypeViewSet)
 # Staff endpoints
 router.register(r'staff', StaffViewSet)
 router.register(r'roles', RoleViewSet)
+router.register(r'staff-roles', StaffRoleViewSet)
 router.register(r'specialties', SpecialtyViewSet)
 router.register(r'certifications', CertificationViewSet)
 router.register(r'contract-types', ContractTypeViewSet)
